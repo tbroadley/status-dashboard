@@ -783,6 +783,17 @@ class StatusDashboard(App):
             task_id = parts[1]
             self._do_open_task_link(task_id)
 
+    def _extract_url(self, text: str) -> str | None:
+        """Extract a URL from text, handling Markdown links like [text](url)."""
+        markdown_link = re.search(r'\[.*?\]\((https?://[^)]+)\)', text)
+        if markdown_link:
+            return markdown_link.group(1)
+        url_pattern = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+')
+        match = url_pattern.search(text)
+        if match:
+            return match.group()
+        return None
+
     @work(exclusive=False)
     async def _do_open_task_link(self, task_id: str) -> None:
         task = await asyncio.to_thread(todoist.get_task, task_id)
@@ -790,18 +801,16 @@ class StatusDashboard(App):
             self.notify("Failed to fetch task", severity="error")
             return
 
-        url_pattern = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+')
-
         content = task.get("content", "")
-        match = url_pattern.search(content)
-        if match:
-            webbrowser.open(match.group())
+        url = self._extract_url(content)
+        if url:
+            webbrowser.open(url)
             return
 
         description = task.get("description", "")
-        match = url_pattern.search(description)
-        if match:
-            webbrowser.open(match.group())
+        url = self._extract_url(description)
+        if url:
+            webbrowser.open(url)
             return
 
         self.notify("No link found in task", severity="warning")

@@ -194,3 +194,26 @@ def create_task(content: str, due_string: str = "today", api_token: str | None =
     except httpx.RequestError as e:
         logger.error("Failed to create task: %s", e)
         return False
+
+
+def delete_task(task_id: str, api_token: str | None = None) -> bool:
+    """Delete a Todoist task. Returns True on success."""
+    token = api_token or _get_token()
+    if not token:
+        logger.error("TODOIST_API_TOKEN not set")
+        return False
+
+    try:
+        response = httpx.delete(
+            f"https://api.todoist.com/rest/v2/tasks/{task_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return True
+    except httpx.HTTPStatusError as e:
+        logger.error("Failed to delete task: %s", e.response.status_code)
+        return False
+    except httpx.RequestError as e:
+        logger.error("Failed to delete task: %s", e)
+        return False

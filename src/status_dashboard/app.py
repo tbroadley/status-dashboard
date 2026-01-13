@@ -3,6 +3,7 @@ import json
 import logging
 import logging.handlers
 import os
+import sys
 import webbrowser
 from pathlib import Path
 
@@ -169,6 +170,7 @@ class StatusDashboard(App):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
+        Binding("R", "restart", "Restart"),
         Binding("c", "complete_task", "Complete"),
         # Panel focus
         Binding("1", "focus_panel('my-prs')", "My PRs", show=False),
@@ -350,6 +352,10 @@ class StatusDashboard(App):
     def action_refresh(self) -> None:
         self.refresh_all()
         self.notify("Refreshing...")
+
+    def action_restart(self) -> None:
+        self.exit()
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
     def action_focus_panel(self, panel_id: str) -> None:
         table = self.query_one(f"#{panel_id}-table", DataTable)

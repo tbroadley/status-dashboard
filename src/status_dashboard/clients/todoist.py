@@ -217,3 +217,77 @@ def delete_task(task_id: str, api_token: str | None = None) -> bool:
     except httpx.RequestError as e:
         logger.error("Failed to delete task: %s", e)
         return False
+
+
+def reopen_task(task_id: str, api_token: str | None = None) -> bool:
+    """Reopen a completed Todoist task. Returns True on success."""
+    token = api_token or _get_token()
+    if not token:
+        logger.error("TODOIST_API_TOKEN not set")
+        return False
+
+    try:
+        response = httpx.post(
+            f"https://api.todoist.com/rest/v2/tasks/{task_id}/reopen",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return True
+    except httpx.HTTPStatusError as e:
+        logger.error("Failed to reopen task: %s", e.response.status_code)
+        return False
+    except httpx.RequestError as e:
+        logger.error("Failed to reopen task: %s", e)
+        return False
+
+
+def get_task(task_id: str, api_token: str | None = None) -> dict | None:
+    """Get a Todoist task by ID. Returns task dict or None on error."""
+    token = api_token or _get_token()
+    if not token:
+        logger.error("TODOIST_API_TOKEN not set")
+        return None
+
+    try:
+        response = httpx.get(
+            f"https://api.todoist.com/rest/v2/tasks/{task_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPStatusError as e:
+        logger.error("Failed to get task: %s", e.response.status_code)
+        return None
+    except httpx.RequestError as e:
+        logger.error("Failed to get task: %s", e)
+        return None
+
+
+def set_due_date(task_id: str, due_date: str | None, api_token: str | None = None) -> bool:
+    """Set a task's due date. Pass None to clear the due date. Returns True on success."""
+    token = api_token or _get_token()
+    if not token:
+        logger.error("TODOIST_API_TOKEN not set")
+        return False
+
+    try:
+        payload = {"due_date": due_date} if due_date else {"due_string": "no date"}
+        response = httpx.post(
+            f"https://api.todoist.com/rest/v2/tasks/{task_id}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=10,
+        )
+        response.raise_for_status()
+        return True
+    except httpx.HTTPStatusError as e:
+        logger.error("Failed to set due date: %s", e.response.status_code)
+        return False
+    except httpx.RequestError as e:
+        logger.error("Failed to set due date: %s", e)
+        return False

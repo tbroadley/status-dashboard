@@ -35,6 +35,7 @@ A terminal dashboard for tracking PRs, Todoist tasks, and Linear issues.
 | `↑/↓` | Navigate items in panel |
 | `Enter` | Open selected item in browser |
 | `r` | Refresh all panels |
+| `R` | Restart app |
 | `c` | Complete selected task/issue |
 | `q` | Quit |
 

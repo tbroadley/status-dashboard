@@ -145,22 +145,92 @@ class Footer(TextualFooter):
 
 
 class VimDataTable(DataTable):
-    """DataTable with vim-style navigation (j/k/g/G)."""
+    """DataTable with vim-style navigation (j/k/g/G) and count prefixes (e.g., 5j)."""
 
     BINDINGS = [
-        Binding("j", "cursor_down", "Down", show=False),
-        Binding("k", "cursor_up", "Up", show=False),
         Binding("g", "cursor_top", "Top", show=False),
         Binding("G", "cursor_bottom", "Bottom", show=False),
     ]
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._vim_count = ""
+
+    def _get_and_reset_count(self) -> int:
+        count = int(self._vim_count) if self._vim_count else 1
+        self._vim_count = ""
+        return count
+
+    def key_j(self) -> None:
+        count = self._get_and_reset_count()
+        for _ in range(count):
+            self.action_cursor_down()
+
+    def key_k(self) -> None:
+        count = self._get_and_reset_count()
+        for _ in range(count):
+            self.action_cursor_up()
+
+    def key_0(self) -> None:
+        if self._vim_count:
+            self._vim_count += "0"
+        else:
+            self._vim_count = ""
+
+    def key_1(self) -> None:
+        self._vim_count += "1"
+
+    def key_2(self) -> None:
+        self._vim_count += "2"
+
+    def key_3(self) -> None:
+        self._vim_count += "3"
+
+    def key_4(self) -> None:
+        self._vim_count += "4"
+
+    def key_5(self) -> None:
+        self._vim_count += "5"
+
+    def key_6(self) -> None:
+        self._vim_count += "6"
+
+    def key_7(self) -> None:
+        self._vim_count += "7"
+
+    def key_8(self) -> None:
+        self._vim_count += "8"
+
+    def key_9(self) -> None:
+        self._vim_count += "9"
+
     def action_cursor_top(self) -> None:
+        self._vim_count = ""
         if self.row_count > 0:
             self.move_cursor(row=0)
 
     def action_cursor_bottom(self) -> None:
+        self._vim_count = ""
         if self.row_count > 0:
             self.move_cursor(row=self.row_count - 1)
+
+    def watch_cursor_coordinate(
+        self, old_coordinate: Coordinate, new_coordinate: Coordinate
+    ) -> None:
+        super().watch_cursor_coordinate(old_coordinate, new_coordinate)
+        self._update_relative_line_numbers()
+
+    def _update_relative_line_numbers(self) -> None:
+        if self.row_count == 0:
+            return
+        cursor_row = self.cursor_row or 0
+        for row_idx in range(self.row_count):
+            distance = abs(row_idx - cursor_row)
+            label = "" if distance == 0 else str(distance)
+            self.update_cell_at(Coordinate(row_idx, 0), label)
+
+    def refresh_line_numbers(self) -> None:
+        self._update_relative_line_numbers()
 
 
 class ReviewRequestsDataTable(VimDataTable):
@@ -279,11 +349,6 @@ class StatusDashboard(App):
         Binding("z", "undo", "Undo"),
         Binding("R", "restart", "Restart"),
         Binding("q", "quit", "Quit"),
-        # Panel focus
-        Binding("1", "focus_panel('my-prs')", "My PRs", show=False),
-        Binding("2", "focus_panel('review-requests')", "Reviews", show=False),
-        Binding("3", "focus_panel('todoist')", "Todoist", show=False),
-        Binding("4", "focus_panel('linear')", "Linear", show=False),
     ]
 
     TITLE = "Status Dashboard"
@@ -308,19 +373,19 @@ class StatusDashboard(App):
 
         # Set up table columns - auto-sized based on content
         my_prs = self.query_one("#my-prs-table", DataTable)
-        my_prs.add_columns("PR", "Title", "Repo", "Status")
+        my_prs.add_columns("#", "PR", "Title", "Repo", "Status")
         self._setup_table(my_prs)
 
         reviews = self.query_one("#review-requests-table", DataTable)
-        reviews.add_columns("PR", "Title", "Repo", "Author", "Age")
+        reviews.add_columns("#", "PR", "Title", "Repo", "Author", "Age")
         self._setup_table(reviews)
 
         todo = self.query_one("#todoist-table", DataTable)
-        todo.add_columns("", "Task")
+        todo.add_columns("#", "", "Task")
         self._setup_table(todo)
 
         lin = self.query_one("#linear-table", DataTable)
-        lin.add_columns("ID", "Title", "Status", "Owner")
+        lin.add_columns("#", "ID", "Title", "Status", "Owner")
         self._setup_table(lin)
 
         self.refresh_all()
@@ -341,7 +406,7 @@ class StatusDashboard(App):
         table.clear()
 
         if not prs:
-            table.add_row("", Text("No open PRs", style="dim italic"), "", "")
+            table.add_row("", "", Text("No open PRs", style="dim italic"), "", "")
         else:
             for pr in prs:
                 if pr.is_draft:
@@ -357,6 +422,7 @@ class StatusDashboard(App):
 
                 repo = _short_repo(pr.repository)
                 table.add_row(
+                    "",
                     f"#{pr.number}",
                     pr.title,
                     repo,
@@ -365,6 +431,7 @@ class StatusDashboard(App):
                 )
 
             self._restore_cursor_by_key(table, selected_key)
+        table.refresh_line_numbers()
 
     @work(exclusive=False)
     async def _refresh_review_requests(self) -> None:
@@ -377,12 +444,13 @@ class StatusDashboard(App):
         visible_prs = [pr for pr in prs if (pr.repository, pr.number) not in HIDDEN_REVIEW_REQUESTS]
 
         if not visible_prs:
-            table.add_row("", Text("No review requests", style="dim italic"), "", "", "")
+            table.add_row("", "", Text("No review requests", style="dim italic"), "", "", "")
         else:
             for pr in visible_prs:
                 repo = _short_repo(pr.repository)
                 age = github._relative_time(pr.created_at)
                 table.add_row(
+                    "",
                     f"#{pr.number}",
                     pr.title,
                     repo,
@@ -392,6 +460,7 @@ class StatusDashboard(App):
                 )
 
             self._restore_cursor_by_key(table, selected_key)
+        table.refresh_line_numbers()
 
     def _get_selected_row_key(self, table: DataTable) -> str | None:
         if table.cursor_row is None or table.row_count == 0:
@@ -419,18 +488,20 @@ class StatusDashboard(App):
         table.clear()
 
         if not tasks:
-            table.add_row("", Text("No tasks for today", style="dim italic"))
+            table.add_row("", "", Text("No tasks for today", style="dim italic"))
         else:
             for task in tasks:
                 checkbox = "[x]" if task.is_completed else "[ ]"
                 content = task.content[:60] + "…" if len(task.content) > 60 else task.content
                 table.add_row(
+                    "",
                     checkbox,
                     content,
                     key=f"todoist:{task.id}:{task.url}",
                 )
 
             self._restore_cursor_by_key(table, selected_key)
+        table.refresh_line_numbers()
 
     @work(exclusive=False)
     async def _refresh_linear(self) -> None:
@@ -443,12 +514,13 @@ class StatusDashboard(App):
         visible_issues = [i for i in issues if i.state not in ("Done", "Canceled", "Duplicate")]
 
         if not visible_issues:
-            table.add_row("", Text("No active issues", style="dim italic"), "", "")
+            table.add_row("", "", Text("No active issues", style="dim italic"), "", "")
         else:
             for issue in visible_issues:
                 assignee = issue.assignee_initials or ""
                 title = issue.title[:50] + "…" if len(issue.title) > 50 else issue.title
                 table.add_row(
+                    "",
                     issue.identifier,
                     title,
                     issue.state,
@@ -457,6 +529,7 @@ class StatusDashboard(App):
                 )
 
             self._restore_cursor_by_key(table, selected_key)
+        table.refresh_line_numbers()
 
     def action_refresh(self) -> None:
         self.refresh_all()
@@ -465,10 +538,6 @@ class StatusDashboard(App):
     def action_restart(self) -> None:
         self.exit()
         os.execv(sys.executable, [sys.executable] + sys.argv)
-
-    def action_focus_panel(self, panel_id: str) -> None:
-        table = self.query_one(f"#{panel_id}-table", DataTable)
-        table.focus()
 
     def action_undo(self) -> None:
         """Undo the most recent action."""
@@ -586,7 +655,7 @@ class StatusDashboard(App):
             return ""
         try:
             row_data = table.get_row_at(table.cursor_row)
-            return str(row_data[1]) if len(row_data) > 1 else ""
+            return str(row_data[2]) if len(row_data) > 2 else ""
         except Exception:
             return ""
 
@@ -777,12 +846,12 @@ class StatusDashboard(App):
             self._do_set_linear_state(issue_id, team_id, state, issue_identifier)
 
     def _get_row_identifier(self, table: DataTable) -> str:
-        """Get the identifier (first column) from the current row."""
+        """Get the identifier (second column, after line numbers) from the current row."""
         if table.cursor_row is None or table.row_count == 0:
             return ""
         try:
             row_data = table.get_row_at(table.cursor_row)
-            return str(row_data[0]) if row_data else ""
+            return str(row_data[1]) if len(row_data) > 1 else ""
         except Exception:
             return ""
 

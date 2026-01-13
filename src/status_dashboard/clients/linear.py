@@ -455,7 +455,6 @@ def create_issue(
 
 
 def get_viewer_id(api_key: str | None = None) -> str | None:
-    """Get the current user's ID. Returns None on error."""
     key = api_key or os.environ.get("LINEAR_API_KEY")
     if not key:
         logger.error("LINEAR_API_KEY not set")
@@ -483,7 +482,6 @@ def get_viewer_id(api_key: str | None = None) -> str | None:
 
 
 def assign_issue(issue_id: str, assignee_id: str | None, api_key: str | None = None) -> bool:
-    """Assign or unassign a Linear issue. Pass None for assignee_id to unassign."""
     key = api_key or os.environ.get("LINEAR_API_KEY")
     if not key:
         logger.error("LINEAR_API_KEY not set")

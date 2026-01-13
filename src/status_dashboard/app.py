@@ -202,8 +202,10 @@ class StatusDashboard(App):
 
     @work(exclusive=False)
     async def _refresh_my_prs(self) -> None:
-        prs = await asyncio.to_thread(github.get_my_prs)
         table: DataTable = self.query_one("#my-prs-table", DataTable)
+        selected_key = self._get_selected_row_key(table)
+
+        prs = await asyncio.to_thread(github.get_my_prs)
         table.clear()
 
         for pr in prs:
@@ -227,20 +229,22 @@ class StatusDashboard(App):
                 key=pr.url,
             )
 
+        self._restore_cursor_by_key(table, selected_key)
+
     @work(exclusive=False)
     async def _refresh_review_requests(self) -> None:
-        prs = await asyncio.to_thread(github.get_review_requests)
         table: DataTable = self.query_one("#review-requests-table", DataTable)
+        selected_key = self._get_selected_row_key(table)
+
+        prs = await asyncio.to_thread(github.get_review_requests)
         table.clear()
 
         for pr in prs:
-            # Skip hidden PRs
             if (pr.repository, pr.number) in HIDDEN_REVIEW_REQUESTS:
                 continue
 
             repo = _short_repo(pr.repository)
             age = github._relative_time(pr.created_at)
-            # Key format: "review:{repo}:{number}:{url}"
             table.add_row(
                 f"#{pr.number}",
                 pr.title,
@@ -250,10 +254,31 @@ class StatusDashboard(App):
                 key=f"review:{pr.repository}:{pr.number}:{pr.url}",
             )
 
+        self._restore_cursor_by_key(table, selected_key)
+
+    def _get_selected_row_key(self, table: DataTable) -> str | None:
+        if table.cursor_row is None or table.row_count == 0:
+            return None
+        cell_key = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0))
+        if cell_key.row_key and cell_key.row_key.value:
+            return str(cell_key.row_key.value)
+        return None
+
+    def _restore_cursor_by_key(self, table: DataTable, row_key: str | None) -> None:
+        if not row_key or table.row_count == 0:
+            return
+        for idx in range(table.row_count):
+            cell_key = table.coordinate_to_cell_key(Coordinate(idx, 0))
+            if cell_key.row_key and str(cell_key.row_key.value) == row_key:
+                table.move_cursor(row=idx)
+                return
+
     @work(exclusive=False)
     async def _refresh_todoist(self) -> None:
-        tasks = await asyncio.to_thread(todoist.get_today_tasks)
         table: DataTable = self.query_one("#todoist-table", DataTable)
+        selected_key = self._get_selected_row_key(table)
+
+        tasks = await asyncio.to_thread(todoist.get_today_tasks)
         table.clear()
 
         for task in tasks:
@@ -265,20 +290,22 @@ class StatusDashboard(App):
                 key=f"todoist:{task.id}:{task.url}",
             )
 
+        self._restore_cursor_by_key(table, selected_key)
+
     @work(exclusive=False)
     async def _refresh_linear(self) -> None:
-        issues = await asyncio.to_thread(linear.get_project_issues)
         table: DataTable = self.query_one("#linear-table", DataTable)
+        selected_key = self._get_selected_row_key(table)
+
+        issues = await asyncio.to_thread(linear.get_project_issues)
         table.clear()
 
         for issue in issues:
-            # Skip completed issues
             if issue.state in ("Done", "Canceled", "Duplicate"):
                 continue
 
             assignee = issue.assignee_initials or ""
             title = issue.title[:50] + "…" if len(issue.title) > 50 else issue.title
-            # Key format: "linear:{issue_id}:{team_id}:{url}"
             table.add_row(
                 issue.identifier,
                 title,
@@ -286,6 +313,8 @@ class StatusDashboard(App):
                 assignee,
                 key=f"linear:{issue.id}:{issue.team_id}:{issue.url}",
             )
+
+        self._restore_cursor_by_key(table, selected_key)
 
     def action_refresh(self) -> None:
         self.refresh_all()
@@ -442,7 +471,6 @@ class StatusDashboard(App):
             self.notify(f"Failed to set state to {state_display}", severity="error")
 
     def _get_selected_linear_issue_id(self) -> str | None:
-        """Get the issue ID of the selected Linear issue, or None if not applicable."""
         focused = self.focused
         if not isinstance(focused, DataTable) or focused.id != "linear-table":
             return None
@@ -462,7 +490,6 @@ class StatusDashboard(App):
         return parts[1] if len(parts) >= 2 else None
 
     def action_assign_self_linear(self) -> None:
-        """Assign the selected Linear issue to yourself."""
         issue_id = self._get_selected_linear_issue_id()
         if not issue_id:
             self.notify("Select a Linear issue first", severity="warning")
@@ -470,7 +497,6 @@ class StatusDashboard(App):
         self._do_assign_linear_issue(issue_id, assign=True)
 
     def action_unassign_linear(self) -> None:
-        """Unassign the selected Linear issue."""
         issue_id = self._get_selected_linear_issue_id()
         if not issue_id:
             self.notify("Select a Linear issue first", severity="warning")

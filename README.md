@@ -29,7 +29,10 @@ A terminal dashboard for tracking PRs, Todoist tasks, and Linear issues.
 
 | Key | Action |
 |-----|--------|
+| `Tab` | Move to next panel |
+| `Shift+Tab` | Move to previous panel |
 | `1-4` | Focus panel (My PRs, Reviews, Todoist, Linear) |
+| `↑/↓` | Navigate items in panel |
 | `Enter` | Open selected item in browser |
 | `r` | Refresh all panels |
 | `c` | Complete selected task/issue |

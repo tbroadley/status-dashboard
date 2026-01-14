@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -290,4 +291,39 @@ def set_due_date(task_id: str, due_date: str | None, api_token: str | None = Non
         return False
     except httpx.RequestError as e:
         logger.error("Failed to set due date: %s", e)
+        return False
+
+
+def update_day_orders(ids_to_orders: dict[str, int], api_token: str | None = None) -> bool:
+    """Update day_order for multiple tasks in the Today view. Returns True on success."""
+    token = api_token or _get_token()
+    if not token:
+        logger.error("TODOIST_API_TOKEN not set")
+        return False
+
+    command = {
+        "type": "item_update_day_orders",
+        "uuid": str(uuid.uuid4()),
+        "args": {"ids_to_orders": ids_to_orders},
+    }
+
+    try:
+        response = httpx.post(
+            "https://api.todoist.com/sync/v9/sync",
+            headers={"Authorization": f"Bearer {token}"},
+            data={"commands": json.dumps([command])},
+            timeout=10,
+        )
+        response.raise_for_status()
+        result = response.json()
+        sync_status = result.get("sync_status", {})
+        if sync_status.get(command["uuid"]) == "ok":
+            return True
+        logger.error("Todoist sync command failed: %s", sync_status)
+        return False
+    except httpx.HTTPStatusError as e:
+        logger.error("Failed to update day orders: %s", e.response.status_code)
+        return False
+    except httpx.RequestError as e:
+        logger.error("Failed to update day orders: %s", e)
         return False

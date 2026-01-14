@@ -26,6 +26,7 @@ from status_dashboard.undo import (
     LinearSetStateAction,
     TodoistCompleteAction,
     TodoistDeferAction,
+    TodoistMoveAction,
     UndoStack,
 )
 from status_dashboard.widgets.create_modals import (
@@ -250,6 +251,8 @@ class TodoistDataTable(VimDataTable):
         Binding("n", "app.defer_task", "Defer"),
         Binding("d", "app.delete_task", "Delete"),
         Binding("o", "app.open_task_link", "Open Link"),
+        Binding("J", "app.move_task_down", "Move Down"),
+        Binding("K", "app.move_task_up", "Move Up"),
     ]
 
 
@@ -364,6 +367,9 @@ class StatusDashboard(App):
 
     def on_mount(self) -> None:
         self._undo_stack = UndoStack()
+        self._todoist_tasks: list[todoist.Task] = []
+        self._todoist_pending_orders: dict[str, int] | None = None
+        self._todoist_debounce_handle: object | None = None
 
         # Set up table columns - auto-sized based on content
         my_prs = self.query_one("#my-prs-table", DataTable)
@@ -475,16 +481,20 @@ class StatusDashboard(App):
 
     @work(exclusive=False)
     async def _refresh_todoist(self) -> None:
-        table: DataTable = self.query_one("#todoist-table", DataTable)
-        selected_key = self._get_selected_row_key(table)
-
         tasks = await asyncio.to_thread(todoist.get_today_tasks)
+        self._todoist_tasks = tasks
+        self._render_todoist_table()
+
+    def _render_todoist_table(self, preserve_cursor: bool = True) -> None:
+        table: DataTable = self.query_one("#todoist-table", DataTable)
+        selected_key = self._get_selected_row_key(table) if preserve_cursor else None
+
         table.clear()
 
-        if not tasks:
+        if not self._todoist_tasks:
             table.add_row("", "", Text("No tasks for today", style="dim italic"))
         else:
-            for task in tasks:
+            for task in self._todoist_tasks:
                 checkbox = "[x]" if task.is_completed else "[ ]"
                 content = task.content[:60] + "…" if len(task.content) > 60 else task.content
                 table.add_row(
@@ -494,7 +504,8 @@ class StatusDashboard(App):
                     key=f"todoist:{task.id}:{task.url}",
                 )
 
-            self._restore_cursor_by_key(table, selected_key)
+            if selected_key:
+                self._restore_cursor_by_key(table, selected_key)
         table.refresh_line_numbers()
 
     @work(exclusive=False)
@@ -550,6 +561,7 @@ class StatusDashboard(App):
         self,
         action: TodoistCompleteAction
         | TodoistDeferAction
+        | TodoistMoveAction
         | LinearSetStateAction
         | LinearAssignAction,
     ) -> None:
@@ -564,6 +576,13 @@ class StatusDashboard(App):
         elif isinstance(action, TodoistDeferAction):
             success = await asyncio.to_thread(
                 todoist.set_due_date, action.task_id, action.original_due_date
+            )
+            if success:
+                self._refresh_todoist()
+
+        elif isinstance(action, TodoistMoveAction):
+            success = await asyncio.to_thread(
+                todoist.update_day_orders, action.ids_to_orders
             )
             if success:
                 self._refresh_todoist()
@@ -749,6 +768,61 @@ class StatusDashboard(App):
             self._refresh_todoist()
         else:
             self.notify("Failed to delete task", severity="error")
+
+    def action_move_task_down(self) -> None:
+        """Move the selected Todoist task down in the Today view."""
+        self._move_todoist_task(1)
+
+    def action_move_task_up(self) -> None:
+        """Move the selected Todoist task up in the Today view."""
+        self._move_todoist_task(-1)
+
+    def _move_todoist_task(self, direction: int) -> None:
+        """Move the selected Todoist task up (-1) or down (+1) with optimistic UI update."""
+        focused = self.focused
+        if not isinstance(focused, DataTable):
+            return
+
+        if focused.id != "todoist-table":
+            self.notify("Can only move Todoist tasks", severity="warning")
+            return
+
+        if focused.cursor_row is None or focused.row_count == 0:
+            return
+
+        current_row = focused.cursor_row
+        target_row = current_row + direction
+
+        if target_row < 0 or target_row >= len(self._todoist_tasks):
+            return
+
+        self._todoist_tasks[current_row], self._todoist_tasks[target_row] = (
+            self._todoist_tasks[target_row], self._todoist_tasks[current_row]
+        )
+
+        self._render_todoist_table(preserve_cursor=False)
+        focused.move_cursor(row=target_row)
+
+        self._schedule_todoist_sync()
+
+    def _schedule_todoist_sync(self) -> None:
+        """Schedule a debounced sync of task order to Todoist API."""
+        if self._todoist_debounce_handle:
+            self._todoist_debounce_handle.stop()
+
+        self._todoist_debounce_handle = self.set_timer(0.5, self._flush_todoist_order)
+
+    @work(exclusive=False)
+    async def _flush_todoist_order(self) -> None:
+        """Send current task order to Todoist API."""
+        self._todoist_debounce_handle = None
+
+        new_orders = {task.id: idx for idx, task in enumerate(self._todoist_tasks)}
+
+        success = await asyncio.to_thread(todoist.update_day_orders, new_orders)
+        if not success:
+            self.notify("Failed to save task order", severity="error")
+            self._refresh_todoist()
 
     def action_open_task_link(self) -> None:
         """Open the first link found in the selected Todoist task's description."""

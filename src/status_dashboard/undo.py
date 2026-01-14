@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -18,6 +18,12 @@ class TodoistDeferAction(UndoAction):
     task_id: str = ""
     original_due_date: str | None = None
     action_type: str = "todoist_defer"
+
+
+@dataclass
+class TodoistMoveAction(UndoAction):
+    ids_to_orders: dict[str, int] = field(default_factory=dict)
+    action_type: str = "todoist_move"
 
 
 @dataclass

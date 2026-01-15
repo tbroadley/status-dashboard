@@ -263,6 +263,15 @@ class ReviewRequestsDataTable(VimDataTable):
     ]
 
 
+class NotificationsDataTable(VimDataTable):
+    """DataTable for GitHub notifications with mark as read binding."""
+
+    BINDINGS = [
+        Binding("x", "app.mark_notification_read", "Mark Read"),
+        Binding("c", "app.copy_pr_link", "Copy Link"),
+    ]
+
+
 class MyPRsDataTable(VimDataTable):
     """DataTable for user's PRs with merge binding."""
 
@@ -397,6 +406,11 @@ class StatusDashboard(App):
                 "review-requests",
                 table_class=ReviewRequestsDataTable,
             )
+            yield Panel(
+                "Notifications",
+                "notifications",
+                table_class=NotificationsDataTable,
+            )
             yield Panel("Todoist (Today)", "todoist", table_class=TodoistDataTable)
             yield Panel("Linear", "linear", table_class=LinearDataTable)
         yield Footer()
@@ -426,6 +440,10 @@ class StatusDashboard(App):
         reviews.add_columns("#", "PR", "Title", "Repo", "Author", "Age")
         self._setup_table(reviews)
 
+        notifs = self.query_one("#notifications-table", DataTable)
+        notifs.add_columns("#", "PR", "Title", "Repo", "Reason", "Age")
+        self._setup_table(notifs)
+
         todo = self.query_one("#todoist-table", DataTable)
         todo.add_columns("#", "", "Task")
         self._setup_table(todo)
@@ -440,6 +458,7 @@ class StatusDashboard(App):
     def refresh_all(self) -> None:
         self._refresh_my_prs()
         self._refresh_review_requests()
+        self._refresh_gh_notifications()
         self._refresh_todoist()
         self._refresh_linear()
 
@@ -516,6 +535,36 @@ class StatusDashboard(App):
                     f"@{pr.author}",
                     age,
                     key=f"review:{pr.repository}:{pr.number}:{pr.url}",
+                )
+
+            self._restore_cursor_by_key(table, selected_key)
+        table.refresh_line_numbers()
+
+    @work(exclusive=False)
+    async def _refresh_gh_notifications(self) -> None:
+        table = self.query_one("#notifications-table", NotificationsDataTable)
+        selected_key = self._get_selected_row_key(table)
+
+        notifications = await asyncio.to_thread(github.get_notifications)
+        table.clear()
+
+        if not notifications:
+            table.add_row(
+                "", "", Text("No notifications", style="dim italic"), "", "", ""
+            )
+        else:
+            for notif in notifications:
+                repo = _short_repo(notif.repository)
+                age = github._relative_time(notif.updated_at)
+                pr_display = f"#{notif.pr_number}" if notif.pr_number else ""
+                table.add_row(
+                    "",
+                    pr_display,
+                    notif.title,
+                    repo,
+                    notif.reason,
+                    age,
+                    key=f"notif:{notif.id}:{notif.repository}:{notif.pr_number or ''}:{notif.url}",
                 )
 
             self._restore_cursor_by_key(table, selected_key)
@@ -621,6 +670,51 @@ class StatusDashboard(App):
         self.notify("Refreshing...")
 
     def action_restart(self) -> None:
+        self._do_upgrade_and_restart()
+
+    def _is_uv_tool(self) -> bool:
+        """Check if this app is installed as a uv tool."""
+        import shutil
+        import subprocess
+
+        if not shutil.which("uv"):
+            return False
+        try:
+            result = subprocess.run(
+                ["uv", "tool", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return "status-dashboard" in result.stdout
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+
+    def _upgrade_uv_tool(self) -> tuple[bool, str]:
+        """Upgrade the uv tool and return (success, message)."""
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["uv", "tool", "upgrade", "status-dashboard"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode != 0:
+                return False, result.stderr[:100]
+            return True, ""
+        except subprocess.TimeoutExpired:
+            return False, "Upgrade timed out"
+
+    @work(exclusive=False)
+    async def _do_upgrade_and_restart(self) -> None:
+        if self._is_uv_tool():
+            self.notify("Upgrading status-dashboard...")
+            success, error = await asyncio.to_thread(self._upgrade_uv_tool)
+            if not success:
+                self.notify(f"Upgrade failed: {error}", severity="warning")
+
         self.exit()
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
@@ -711,6 +805,9 @@ class StatusDashboard(App):
         elif key.startswith("review:"):
             # Format: "review:{repo}:{number}:{url}"
             url = key.split(":", 3)[3]
+        elif key.startswith("notif:"):
+            # Format: "notif:{thread_id}:{repo}:{pr_number}:{url}"
+            url = key.split(":", 4)[4]
         else:
             # GitHub PRs use URL directly as key
             url = key
@@ -1231,7 +1328,11 @@ class StatusDashboard(App):
         if not isinstance(focused, DataTable):
             return
 
-        if focused.id not in ("my-prs-table", "review-requests-table"):
+        if focused.id not in (
+            "my-prs-table",
+            "review-requests-table",
+            "notifications-table",
+        ):
             self.notify("Can only copy links from PR tables", severity="warning")
             return
 
@@ -1248,11 +1349,50 @@ class StatusDashboard(App):
             url = key
         elif key.startswith("review:"):
             url = key.split(":", 3)[3]
+        elif key.startswith("notif:"):
+            url = key.split(":", 4)[4]
         else:
             return
 
         self.copy_to_clipboard(url)
         self.notify("Link copied to clipboard")
+
+    def action_mark_notification_read(self) -> None:
+        """Mark the selected notification as read."""
+        focused = self.focused
+        if not isinstance(focused, DataTable):
+            return
+
+        if focused.id != "notifications-table":
+            self.notify("Can only mark notifications as read", severity="warning")
+            return
+
+        if focused.cursor_row is None or focused.row_count == 0:
+            return
+
+        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
+        if not cell_key.row_key or not cell_key.row_key.value:
+            return
+
+        key = str(cell_key.row_key.value)
+
+        if not key.startswith("notif:"):
+            return
+
+        # Key format: "notif:{thread_id}:{repo}:{pr_number}:{url}"
+        parts = key.split(":", 4)
+        if len(parts) >= 2:
+            thread_id = parts[1]
+            self._do_mark_notification_read(thread_id)
+
+    @work(exclusive=False)
+    async def _do_mark_notification_read(self, thread_id: str) -> None:
+        success = await asyncio.to_thread(github.mark_notification_read, thread_id)
+        if success:
+            self.notify("Notification marked as read")
+            self._refresh_gh_notifications()
+        else:
+            self.notify("Failed to mark notification as read", severity="error")
 
     def action_create_todoist_task(self) -> None:
         """Show modal to create a new Todoist task."""

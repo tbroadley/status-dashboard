@@ -396,6 +396,8 @@ class StatusDashboard(App):
         Binding("z", "undo", "Undo"),
         Binding("R", "restart", "Restart"),
         Binding("q", "quit", "Quit"),
+        Binding("ctrl+shift+up", "focus_previous_pane", "Prev Pane", show=False),
+        Binding("ctrl+shift+down", "focus_next_pane", "Next Pane", show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -671,6 +673,32 @@ class StatusDashboard(App):
 
     def action_restart(self) -> None:
         self._do_upgrade_and_restart()
+
+    def action_focus_previous_pane(self) -> None:
+        """Move focus to the previous pane."""
+        tables = list(self.query(DataTable))
+        if not tables:
+            return
+        focused = self.focused
+        if not isinstance(focused, DataTable) or focused not in tables:
+            tables[-1].focus()
+            return
+        current_idx = tables.index(focused)
+        prev_idx = (current_idx - 1) % len(tables)
+        tables[prev_idx].focus()
+
+    def action_focus_next_pane(self) -> None:
+        """Move focus to the next pane."""
+        tables = list(self.query(DataTable))
+        if not tables:
+            return
+        focused = self.focused
+        if not isinstance(focused, DataTable) or focused not in tables:
+            tables[0].focus()
+            return
+        current_idx = tables.index(focused)
+        next_idx = (current_idx + 1) % len(tables)
+        tables[next_idx].focus()
 
     def _is_uv_tool(self) -> bool:
         """Check if this app is installed as a uv tool."""

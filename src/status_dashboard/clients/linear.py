@@ -223,7 +223,11 @@ def get_project_issues(
     for proj in projects:
         for issue in proj.get("issues", {}).get("nodes", []):
             assignee = issue.get("assignee")
-            assignee_name = assignee.get("displayName") or assignee.get("name") if assignee else None
+            assignee_name = (
+                assignee.get("displayName") or assignee.get("name")
+                if assignee
+                else None
+            )
 
             issues.append(
                 Issue(
@@ -243,7 +247,9 @@ def get_project_issues(
     return issues
 
 
-def set_issue_state(issue_id: str, team_id: str, state_name: str, api_key: str | None = None) -> bool:
+def set_issue_state(
+    issue_id: str, team_id: str, state_name: str, api_key: str | None = None
+) -> bool:
     """Set a Linear issue's state. Returns True on success.
 
     state_name should be one of: backlog, todo, in_progress, in_review, done
@@ -307,7 +313,11 @@ def set_issue_state(issue_id: str, team_id: str, state_name: str, api_key: str |
         return result.get("data", {}).get("issueUpdate", {}).get("success", False)
 
     except httpx.HTTPStatusError as e:
-        logger.error("Failed to set issue state: %s - %s", e.response.status_code, e.response.text)
+        logger.error(
+            "Failed to set issue state: %s - %s",
+            e.response.status_code,
+            e.response.text,
+        )
         return False
     except httpx.RequestError as e:
         logger.error("Failed to set issue state: %s", e)
@@ -319,7 +329,9 @@ def complete_issue(issue_id: str, team_id: str, api_key: str | None = None) -> b
     return set_issue_state(issue_id, team_id, "done", api_key)
 
 
-def get_team_id(project_name: str | None = None, api_key: str | None = None) -> str | None:
+def get_team_id(
+    project_name: str | None = None, api_key: str | None = None
+) -> str | None:
     """Get the team ID for a project. Returns None on error."""
     key = api_key or os.environ.get("LINEAR_API_KEY")
     if not key:
@@ -468,7 +480,9 @@ def create_issue(
             data = response.json()
 
             if "errors" in data:
-                logger.error("Linear API error getting workflow states: %s", data["errors"])
+                logger.error(
+                    "Linear API error getting workflow states: %s", data["errors"]
+                )
                 return False
 
             states = data.get("data", {}).get("workflowStates", {}).get("nodes", [])
@@ -516,7 +530,9 @@ def create_issue(
         return result.get("data", {}).get("issueCreate", {}).get("success", False)
 
     except httpx.HTTPStatusError as e:
-        logger.error("Failed to create issue: %s - %s", e.response.status_code, e.response.text)
+        logger.error(
+            "Failed to create issue: %s - %s", e.response.status_code, e.response.text
+        )
         return False
     except httpx.RequestError as e:
         logger.error("Failed to create issue: %s", e)
@@ -550,7 +566,9 @@ def get_viewer_id(api_key: str | None = None) -> str | None:
         return None
 
 
-def assign_issue(issue_id: str, assignee_id: str | None, api_key: str | None = None) -> bool:
+def assign_issue(
+    issue_id: str, assignee_id: str | None, api_key: str | None = None
+) -> bool:
     key = api_key or os.environ.get("LINEAR_API_KEY")
     if not key:
         logger.error("LINEAR_API_KEY not set")

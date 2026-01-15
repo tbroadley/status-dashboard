@@ -9,7 +9,12 @@ logger = logging.getLogger(__name__)
 
 SUBPROCESS_TIMEOUT = 30  # seconds
 
-BOT_REVIEWERS = {"copilot-pull-request-reviewer", "copilot", "github-actions", "chatgpt-codex-connector"}
+BOT_REVIEWERS = {
+    "copilot-pull-request-reviewer",
+    "copilot",
+    "github-actions",
+    "chatgpt-codex-connector",
+}
 
 
 @dataclass
@@ -162,7 +167,8 @@ def get_my_prs(org: str | None = None) -> list[PullRequest]:
 
         # Filter out bot reviews
         human_reviews = [
-            r for r in reviews
+            r
+            for r in reviews
             if r.get("author", {}).get("login", "").lower() not in BOT_REVIEWERS
         ]
 
@@ -172,9 +178,7 @@ def get_my_prs(org: str | None = None) -> list[PullRequest]:
         has_changes_requested = any(
             r.get("state") == "CHANGES_REQUESTED" for r in human_reviews
         )
-        has_comments = any(
-            r.get("state") == "COMMENTED" for r in human_reviews
-        )
+        has_comments = any(r.get("state") == "COMMENTED" for r in human_reviews)
 
         commits = pr.get("commits", {}).get("nodes", [])
         ci_state = None
@@ -183,17 +187,19 @@ def get_my_prs(org: str | None = None) -> list[PullRequest]:
             if rollup:
                 ci_state = rollup.get("state")
 
-        prs.append(PullRequest(
-            number=pr["number"],
-            title=pr["title"],
-            repository=pr.get("repository", {}).get("nameWithOwner", "unknown"),
-            url=pr["url"],
-            is_draft=pr.get("isDraft", False),
-            is_approved=is_approved,
-            needs_response=has_changes_requested or has_comments,
-            has_review=len(human_reviews) > 0,
-            ci_status=ci_state,
-        ))
+        prs.append(
+            PullRequest(
+                number=pr["number"],
+                title=pr["title"],
+                repository=pr.get("repository", {}).get("nameWithOwner", "unknown"),
+                url=pr["url"],
+                is_draft=pr.get("isDraft", False),
+                is_approved=is_approved,
+                needs_response=has_changes_requested or has_comments,
+                has_review=len(human_reviews) > 0,
+                ci_status=ci_state,
+            )
+        )
 
     return prs
 
@@ -210,7 +216,16 @@ def remove_self_as_reviewer(repo: str, pr_number: int) -> bool:
     """
     try:
         result = subprocess.run(
-            ["gh", "pr", "edit", str(pr_number), "--repo", repo, "--remove-reviewer", "@me"],
+            [
+                "gh",
+                "pr",
+                "edit",
+                str(pr_number),
+                "--repo",
+                repo,
+                "--remove-reviewer",
+                "@me",
+            ],
             capture_output=True,
             text=True,
             timeout=SUBPROCESS_TIMEOUT,
@@ -272,13 +287,15 @@ def get_review_requests(org: str | None = None) -> list[ReviewRequest]:
         if not pr:
             continue
 
-        prs.append(ReviewRequest(
-            number=pr["number"],
-            title=pr["title"],
-            repository=pr.get("repository", {}).get("nameWithOwner", "unknown"),
-            url=pr["url"],
-            author=pr.get("author", {}).get("login", "unknown"),
-            created_at=_parse_datetime(pr["createdAt"]),
-        ))
+        prs.append(
+            ReviewRequest(
+                number=pr["number"],
+                title=pr["title"],
+                repository=pr.get("repository", {}).get("nameWithOwner", "unknown"),
+                url=pr["url"],
+                author=pr.get("author", {}).get("login", "unknown"),
+                created_at=_parse_datetime(pr["createdAt"]),
+            )
+        )
 
     return prs

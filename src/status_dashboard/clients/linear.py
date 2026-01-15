@@ -252,8 +252,8 @@ def get_project_issues(
                 )
             )
 
-    # Sort by sort_order (user-defined order)
-    issues.sort(key=lambda i: i.sort_order)
+    # Sort by status first (In Review, In Progress, Todo, Backlog), then by sort_order within each status
+    issues.sort(key=lambda i: (STATUS_ORDER.get(i.state, 999), i.sort_order))
 
     return issues
 

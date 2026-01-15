@@ -1361,7 +1361,7 @@ class StatusDashboard(App):
         self._move_linear_issue(-1)
 
     def _move_linear_issue(self, direction: int) -> None:
-        """Move the selected Linear issue up (-1) or down (+1) with optimistic UI update."""
+        """Move the selected Linear issue up (-1) or down (+1) within its status group."""
         focused = self.focused
         if not isinstance(focused, DataTable):
             return
@@ -1380,6 +1380,11 @@ class StatusDashboard(App):
             return
 
         moved_issue = self._linear_issues[current_row]
+        target_issue = self._linear_issues[target_row]
+
+        if moved_issue.state != target_issue.state:
+            return
+
         original_sort_order = moved_issue.sort_order
 
         self._linear_issues[current_row], self._linear_issues[target_row] = (
@@ -1418,17 +1423,28 @@ class StatusDashboard(App):
         if target_row < 0 or target_row >= len(self._linear_issues):
             return
 
-        if target_row == 0:
+        moved_issue = self._linear_issues[target_row]
+        same_status_issues = [
+            (idx, i)
+            for idx, i in enumerate(self._linear_issues)
+            if i.state == moved_issue.state
+        ]
+
+        pos_in_group = next(
+            i for i, (idx, _) in enumerate(same_status_issues) if idx == target_row
+        )
+
+        if pos_in_group == 0:
             new_sort_order = (
-                self._linear_issues[1].sort_order - 1.0
-                if len(self._linear_issues) > 1
+                same_status_issues[1][1].sort_order - 1.0
+                if len(same_status_issues) > 1
                 else 0.0
             )
-        elif target_row == len(self._linear_issues) - 1:
-            new_sort_order = self._linear_issues[-2].sort_order + 1.0
+        elif pos_in_group == len(same_status_issues) - 1:
+            new_sort_order = same_status_issues[-2][1].sort_order + 1.0
         else:
-            prev_order = self._linear_issues[target_row - 1].sort_order
-            next_order = self._linear_issues[target_row + 1].sort_order
+            prev_order = same_status_issues[pos_in_group - 1][1].sort_order
+            next_order = same_status_issues[pos_in_group + 1][1].sort_order
             new_sort_order = (prev_order + next_order) / 2.0
 
         self._linear_issues[target_row].sort_order = new_sort_order

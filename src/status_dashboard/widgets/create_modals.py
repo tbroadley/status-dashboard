@@ -1,5 +1,7 @@
 """Modal dialogs for creating Todoist tasks and Linear issues."""
 
+from typing import Any
+
 from textual.app import ComposeResult
 from textual.containers import Container, Vertical
 from textual.screen import ModalScreen
@@ -78,10 +80,12 @@ class CreateTodoistTaskModal(ModalScreen):
 
             task_content = task_input.value.strip()
             if task_content:
-                self.dismiss({
-                    "content": task_content,
-                    "due_string": str(due_select.value),
-                })
+                self.dismiss(
+                    {
+                        "content": task_content,
+                        "due_string": str(due_select.value),
+                    }
+                )
             else:
                 task_input.focus()
         else:
@@ -140,7 +144,13 @@ class CreateLinearIssueModal(ModalScreen):
     }
     """
 
-    def __init__(self, team_members: list[dict], *args, viewer_id: str | None = None, **kwargs):
+    def __init__(
+        self,
+        team_members: list[dict[str, Any]],
+        *args: Any,
+        viewer_id: str | None = None,
+        **kwargs: Any,
+    ):
         super().__init__(*args, **kwargs)
         self.team_members = team_members
         self.viewer_id = viewer_id
@@ -150,7 +160,10 @@ class CreateLinearIssueModal(ModalScreen):
         assignee_options = [("Unassigned", "")]
         sorted_members = sorted(
             self.team_members,
-            key=lambda m: (m["id"] != self.viewer_id, m.get("displayName") or m.get("name", "")),
+            key=lambda m: (
+                m["id"] != self.viewer_id,
+                m.get("displayName") or m.get("name", ""),
+            ),
         )
         for member in sorted_members:
             display_name = member.get("displayName") or member.get("name", "Unknown")

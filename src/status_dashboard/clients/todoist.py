@@ -4,6 +4,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
+from typing import Any
 from datetime import date, timedelta
 
 import httpx
@@ -27,11 +28,11 @@ def _get_token() -> str | None:
 def _slugify(text: str) -> str:
     """Convert text to URL slug."""
     # Remove markdown links, keep just the text
-    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
     # Lowercase and replace non-alphanumeric with hyphens
-    slug = re.sub(r'[^a-z0-9]+', '-', text.lower())
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower())
     # Remove leading/trailing hyphens and collapse multiple hyphens
-    slug = re.sub(r'-+', '-', slug).strip('-')
+    slug = re.sub(r"-+", "-", slug).strip("-")
     return slug[:50]  # Limit length
 
 
@@ -89,13 +90,15 @@ def get_today_tasks(api_token: str | None = None) -> list[Task]:
         slug = _slugify(item["content"])
         url = f"https://app.todoist.com/app/task/{slug}-{v2_id}"
 
-        tasks.append(Task(
-            id=item["id"],
-            content=item["content"],
-            is_completed=item.get("checked", False),
-            url=url,
-            day_order=item.get("day_order", 0),
-        ))
+        tasks.append(
+            Task(
+                id=item["id"],
+                content=item["content"],
+                is_completed=item.get("checked", False),
+                url=url,
+                day_order=item.get("day_order", 0),
+            )
+        )
 
     # Sort by day_order (Today view order)
     tasks.sort(key=lambda t: t.day_order)
@@ -167,7 +170,9 @@ def defer_task(task_id: str, api_token: str | None = None) -> bool:
         return False
 
 
-def create_task(content: str, due_string: str = "today", api_token: str | None = None) -> bool:
+def create_task(
+    content: str, due_string: str = "today", api_token: str | None = None
+) -> bool:
     """Create a new Todoist task. Returns True on success."""
     token = api_token or _get_token()
     if not token:
@@ -190,7 +195,9 @@ def create_task(content: str, due_string: str = "today", api_token: str | None =
         response.raise_for_status()
         return True
     except httpx.HTTPStatusError as e:
-        logger.error("Failed to create task: %s - %s", e.response.status_code, e.response.text)
+        logger.error(
+            "Failed to create task: %s - %s", e.response.status_code, e.response.text
+        )
         return False
     except httpx.RequestError as e:
         logger.error("Failed to create task: %s", e)
@@ -243,7 +250,7 @@ def reopen_task(task_id: str, api_token: str | None = None) -> bool:
         return False
 
 
-def get_task(task_id: str, api_token: str | None = None) -> dict | None:
+def get_task(task_id: str, api_token: str | None = None) -> dict[str, Any] | None:
     """Get a Todoist task by ID. Returns task dict or None on error."""
     token = api_token or _get_token()
     if not token:
@@ -266,7 +273,9 @@ def get_task(task_id: str, api_token: str | None = None) -> dict | None:
         return None
 
 
-def set_due_date(task_id: str, due_date: str | None, api_token: str | None = None) -> bool:
+def set_due_date(
+    task_id: str, due_date: str | None, api_token: str | None = None
+) -> bool:
     """Set a task's due date. Pass None to clear the due date. Returns True on success."""
     token = api_token or _get_token()
     if not token:
@@ -294,7 +303,9 @@ def set_due_date(task_id: str, due_date: str | None, api_token: str | None = Non
         return False
 
 
-def update_day_orders(ids_to_orders: dict[str, int], api_token: str | None = None) -> bool:
+def update_day_orders(
+    ids_to_orders: dict[str, int], api_token: str | None = None
+) -> bool:
     """Update day_order for multiple tasks in the Today view. Returns True on success."""
     token = api_token or _get_token()
     if not token:

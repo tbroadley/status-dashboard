@@ -15,3 +15,9 @@ status-dashboard = "status_dashboard.app:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.37.1",
+    "ruff>=0.14.11",
+]

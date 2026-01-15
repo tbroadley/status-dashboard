@@ -34,22 +34,40 @@ from status_dashboard.widgets.create_modals import (
     CreateTodoistTaskModal,
 )
 
-load_dotenv(find_dotenv(usecwd=True))
+
+def _get_config_dir() -> Path:
+    """Get the config directory, following XDG conventions."""
+    xdg_config = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg_config) if xdg_config else Path.home() / ".config"
+    return base / "status-dashboard"
+
+
+# Load .env from XDG config directory, falling back to cwd for development
+_config_env = _get_config_dir() / ".env"
+if _config_env.exists():
+    load_dotenv(_config_env)
+else:
+    load_dotenv(find_dotenv(usecwd=True))
+
 
 def _load_hidden_review_requests() -> set[tuple[str, int]]:
     """Load hidden review requests from HIDDEN_REVIEW_REQUESTS env var (JSON array of [repo, pr_number])."""
     raw = os.environ.get("HIDDEN_REVIEW_REQUESTS", "[]")
     try:
-        items = json.loads(raw)
-        return {(repo, int(pr_num)) for repo, pr_num in items}
+        items: list[list[str | int]] = json.loads(raw)
+        return {(str(repo), int(pr_num)) for repo, pr_num in items}
     except (json.JSONDecodeError, ValueError, TypeError):
         return set()
 
+
 HIDDEN_REVIEW_REQUESTS = _load_hidden_review_requests()
+
 
 def _setup_logging() -> None:
     """Configure logging to stderr and a rotating log file."""
-    log_dir = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "status-dashboard"
+    xdg_state = os.environ.get("XDG_STATE_HOME")
+    state_base = Path(xdg_state) if xdg_state else Path.home() / ".local" / "state"
+    log_dir = state_base / "status-dashboard"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "status-dashboard.log"
 
@@ -68,6 +86,7 @@ def _setup_logging() -> None:
     )
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
+
 
 _setup_logging()
 
@@ -283,7 +302,9 @@ class LinearDataTable(VimDataTable):
 class Panel(Container):
     """A panel with a title and data table."""
 
-    def __init__(self, title: str, panel_id: str, table_class: type[DataTable] = VimDataTable):
+    def __init__(
+        self, title: str, panel_id: str, table_class: type[DataTable] = VimDataTable
+    ):
         super().__init__(id=panel_id)
         self.panel_title = title
         self.table_class = table_class
@@ -362,7 +383,11 @@ class StatusDashboard(App):
     def compose(self) -> ComposeResult:
         with VerticalScroll(can_focus=False):
             yield Panel("My PRs", "my-prs", table_class=MyPRsDataTable)
-            yield Panel("Review Requests", "review-requests", table_class=ReviewRequestsDataTable)
+            yield Panel(
+                "Review Requests",
+                "review-requests",
+                table_class=ReviewRequestsDataTable,
+            )
             yield Panel("Todoist (Today)", "todoist", table_class=TodoistDataTable)
             yield Panel("Linear", "linear", table_class=LinearDataTable)
         yield Footer()
@@ -431,7 +456,12 @@ class StatusDashboard(App):
                 else:
                     status = "waiting"
 
-                ci_display = {"SUCCESS": "pass", "FAILURE": "fail", "PENDING": "...", "EXPECTED": "..."}.get(pr.ci_status, "")
+                ci_display = {
+                    "SUCCESS": "pass",
+                    "FAILURE": "fail",
+                    "PENDING": "...",
+                    "EXPECTED": "...",
+                }.get(pr.ci_status, "")
 
                 repo = _short_repo(pr.repository)
                 table.add_row(
@@ -455,10 +485,14 @@ class StatusDashboard(App):
         prs = await asyncio.to_thread(github.get_review_requests)
         table.clear()
 
-        visible_prs = [pr for pr in prs if (pr.repository, pr.number) not in HIDDEN_REVIEW_REQUESTS]
+        visible_prs = [
+            pr for pr in prs if (pr.repository, pr.number) not in HIDDEN_REVIEW_REQUESTS
+        ]
 
         if not visible_prs:
-            table.add_row("", "", Text("No review requests", style="dim italic"), "", "", "")
+            table.add_row(
+                "", "", Text("No review requests", style="dim italic"), "", "", ""
+            )
         else:
             for pr in visible_prs:
                 repo = _short_repo(pr.repository)
@@ -524,7 +558,9 @@ class StatusDashboard(App):
         else:
             for task in self._todoist_tasks:
                 checkbox = "[x]" if task.is_completed else "[ ]"
-                content = task.content[:60] + "…" if len(task.content) > 60 else task.content
+                content = (
+                    task.content[:60] + "…" if len(task.content) > 60 else task.content
+                )
                 table.add_row(
                     "",
                     checkbox,
@@ -544,7 +580,9 @@ class StatusDashboard(App):
         issues = await asyncio.to_thread(linear.get_project_issues)
         table.clear()
 
-        visible_issues = [i for i in issues if i.state not in ("Done", "Canceled", "Duplicate")]
+        visible_issues = [
+            i for i in issues if i.state not in ("Done", "Canceled", "Duplicate")
+        ]
 
         if not visible_issues:
             table.add_row("", "", Text("No active issues", style="dim italic"), "", "")
@@ -689,7 +727,9 @@ class StatusDashboard(App):
                 team_id = parts[2]
                 self._do_complete_linear_issue(issue_id, team_id)
         else:
-            self.notify("Can only complete Todoist tasks or Linear issues", severity="warning")
+            self.notify(
+                "Can only complete Todoist tasks or Linear issues", severity="warning"
+            )
 
     def _get_row_content(self, table: DataTable) -> str:
         """Get the content/title column text from the current row."""
@@ -702,14 +742,20 @@ class StatusDashboard(App):
             return ""
 
     @work(exclusive=False)
-    async def _do_complete_todoist_task(self, task_id: str, task_name: str | None) -> None:
+    async def _do_complete_todoist_task(
+        self, task_id: str, task_name: str | None
+    ) -> None:
         success = await asyncio.to_thread(todoist.complete_task, task_id)
         if success:
-            description = f"Complete: {task_name[:30]}" if task_name else "Complete task"
-            self._undo_stack.push(TodoistCompleteAction(
-                task_id=task_id,
-                description=description,
-            ))
+            description = (
+                f"Complete: {task_name[:30]}" if task_name else "Complete task"
+            )
+            self._undo_stack.push(
+                TodoistCompleteAction(
+                    task_id=task_id,
+                    description=description,
+                )
+            )
             self.notify("Task completed!")
             self._refresh_todoist()
         else:
@@ -747,16 +793,20 @@ class StatusDashboard(App):
     @work(exclusive=False)
     async def _do_defer_todoist_task(self, task_id: str, task_name: str | None) -> None:
         task = await asyncio.to_thread(todoist.get_task, task_id)
-        original_due = task.get("due", {}).get("date") if task and task.get("due") else None
+        original_due = (
+            task.get("due", {}).get("date") if task and task.get("due") else None
+        )
 
         success = await asyncio.to_thread(todoist.defer_task, task_id)
         if success:
             description = f"Defer: {task_name[:30]}" if task_name else "Defer task"
-            self._undo_stack.push(TodoistDeferAction(
-                task_id=task_id,
-                original_due_date=original_due,
-                description=description,
-            ))
+            self._undo_stack.push(
+                TodoistDeferAction(
+                    task_id=task_id,
+                    original_due_date=original_due,
+                    description=description,
+                )
+            )
             self.notify("Task deferred to next working day")
             self._refresh_todoist()
         else:
@@ -826,7 +876,8 @@ class StatusDashboard(App):
             return
 
         self._todoist_tasks[current_row], self._todoist_tasks[target_row] = (
-            self._todoist_tasks[target_row], self._todoist_tasks[current_row]
+            self._todoist_tasks[target_row],
+            self._todoist_tasks[current_row],
         )
 
         self._render_todoist_table(preserve_cursor=False)
@@ -882,7 +933,7 @@ class StatusDashboard(App):
 
     def _extract_url(self, text: str) -> str | None:
         """Extract a URL from text, handling Markdown links like [text](url)."""
-        markdown_link = re.search(r'\[.*?\]\((https?://[^)]+)\)', text)
+        markdown_link = re.search(r"\[.*?\]\((https?://[^)]+)\)", text)
         if markdown_link:
             return markdown_link.group(1)
         url_pattern = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+')
@@ -969,16 +1020,20 @@ class StatusDashboard(App):
         previous_state = issue.get("state", {}).get("name") if issue else None
 
         state_display = linear.STATE_NAME_MAP.get(state, state)
-        success = await asyncio.to_thread(linear.set_issue_state, issue_id, team_id, state)
+        success = await asyncio.to_thread(
+            linear.set_issue_state, issue_id, team_id, state
+        )
         if success:
             if previous_state:
                 description = f"Set {issue_identifier or issue_id} to {state_display}"
-                self._undo_stack.push(LinearSetStateAction(
-                    issue_id=issue_id,
-                    team_id=team_id,
-                    previous_state=previous_state,
-                    description=description,
-                ))
+                self._undo_stack.push(
+                    LinearSetStateAction(
+                        issue_id=issue_id,
+                        team_id=team_id,
+                        previous_state=previous_state,
+                        description=description,
+                    )
+                )
             self.notify(f"Moved to {state_display}")
             self._refresh_linear()
         else:
@@ -1013,7 +1068,9 @@ class StatusDashboard(App):
             self.notify("Select a Linear issue first", severity="warning")
             return
         issue_identifier = self._get_row_identifier(focused)
-        self._do_assign_linear_issue(issue_id, assign=True, issue_identifier=issue_identifier)
+        self._do_assign_linear_issue(
+            issue_id, assign=True, issue_identifier=issue_identifier
+        )
 
     def action_unassign_linear(self) -> None:
         focused = self.focused
@@ -1025,7 +1082,9 @@ class StatusDashboard(App):
             self.notify("Select a Linear issue first", severity="warning")
             return
         issue_identifier = self._get_row_identifier(focused)
-        self._do_assign_linear_issue(issue_id, assign=False, issue_identifier=issue_identifier)
+        self._do_assign_linear_issue(
+            issue_id, assign=False, issue_identifier=issue_identifier
+        )
 
     @work(exclusive=False)
     async def _do_assign_linear_issue(
@@ -1033,7 +1092,9 @@ class StatusDashboard(App):
     ) -> None:
         issue = await asyncio.to_thread(linear.get_issue, issue_id)
         previous_assignee_id = (
-            issue.get("assignee", {}).get("id") if issue and issue.get("assignee") else None
+            issue.get("assignee", {}).get("id")
+            if issue and issue.get("assignee")
+            else None
         )
 
         if assign:
@@ -1047,12 +1108,16 @@ class StatusDashboard(App):
 
         success = await asyncio.to_thread(linear.assign_issue, issue_id, assignee_id)
         if success:
-            description = f"{'Assign' if assign else 'Unassign'} {issue_identifier or issue_id}"
-            self._undo_stack.push(LinearAssignAction(
-                issue_id=issue_id,
-                previous_assignee_id=previous_assignee_id,
-                description=description,
-            ))
+            description = (
+                f"{'Assign' if assign else 'Unassign'} {issue_identifier or issue_id}"
+            )
+            self._undo_stack.push(
+                LinearAssignAction(
+                    issue_id=issue_id,
+                    previous_assignee_id=previous_assignee_id,
+                    description=description,
+                )
+            )
             self.notify("Assigned to you" if assign else "Unassigned")
             self._refresh_linear()
         else:
@@ -1089,7 +1154,9 @@ class StatusDashboard(App):
 
     @work(exclusive=False)
     async def _do_remove_self_as_reviewer(self, repo: str, pr_number: int) -> None:
-        success = await asyncio.to_thread(github.remove_self_as_reviewer, repo, pr_number)
+        success = await asyncio.to_thread(
+            github.remove_self_as_reviewer, repo, pr_number
+        )
         if success:
             self.notify(f"Removed from PR #{pr_number}")
             self._refresh_review_requests()

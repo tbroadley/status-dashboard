@@ -515,10 +515,11 @@ class StatusDashboard(App):
                 )
 
                 repo = _short_repo(pr.repository)
+                title = pr.title[:40] + "…" if len(pr.title) > 40 else pr.title
                 table.add_row(
                     "",
                     f"#{pr.number}",
-                    pr.title,
+                    title,
                     repo,
                     status,
                     ci_display,
@@ -549,10 +550,11 @@ class StatusDashboard(App):
             for pr in visible_prs:
                 repo = _short_repo(pr.repository)
                 age = github._relative_time(pr.created_at)
+                title = pr.title[:40] + "…" if len(pr.title) > 40 else pr.title
                 table.add_row(
                     "",
                     f"#{pr.number}",
-                    pr.title,
+                    title,
                     repo,
                     f"@{pr.author}",
                     age,
@@ -579,10 +581,11 @@ class StatusDashboard(App):
                 repo = _short_repo(notif.repository)
                 age = github._relative_time(notif.updated_at)
                 pr_display = f"#{notif.pr_number}" if notif.pr_number else ""
+                title = notif.title[:40] + "…" if len(notif.title) > 40 else notif.title
                 table.add_row(
                     "",
                     pr_display,
-                    notif.title,
+                    title,
                     repo,
                     notif.reason,
                     age,

@@ -56,6 +56,36 @@ query GetProjectIssues($projectName: String!) {
 }
 """
 
+TEAM_ISSUES_QUERY = """
+query GetTeamIssues($teamKey: String!) {
+  teams(filter: { key: { eq: $teamKey } }) {
+    nodes {
+      issues(first: 40) {
+        nodes {
+          id
+          identifier
+          title
+          state {
+            name
+          }
+          url
+          assignee {
+            name
+            displayName
+          }
+          team {
+            id
+          }
+          project {
+            id
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
 WORKFLOW_STATES_QUERY = """
 query GetWorkflowStates($teamId: ID!) {
   workflowStates(filter: { team: { id: { eq: $teamId } } }) {
@@ -195,7 +225,7 @@ def get_project_issues(
     project_name: str | None = None,
     api_key: str | None = None,
 ) -> list[Issue]:
-    """Get Linear issues for a specific project, sorted by status."""
+    """Get Linear issues for a specific project plus team issues without a project, sorted by status."""
     key = api_key or os.environ.get("LINEAR_API_KEY")
     if not key:
         logger.warning("LINEAR_API_KEY not set, skipping Linear issues")
@@ -228,10 +258,82 @@ def get_project_issues(
         logger.error("Failed to parse Linear response: %s", e)
         return []
 
-    issues = []
+    issues_by_id: dict[str, Issue] = {}
     projects = data.get("data", {}).get("projects", {}).get("nodes", [])
     for proj in projects:
         for issue in proj.get("issues", {}).get("nodes", []):
+            assignee = issue.get("assignee")
+            assignee_name = (
+                assignee.get("displayName") or assignee.get("name")
+                if assignee
+                else None
+            )
+
+            issues_by_id[issue["id"]] = Issue(
+                id=issue["id"],
+                identifier=issue["identifier"],
+                title=issue["title"],
+                state=issue.get("state", {}).get("name", "Unknown"),
+                url=issue["url"],
+                team_id=issue.get("team", {}).get("id", ""),
+                assignee_initials=_get_initials(assignee_name),
+            )
+
+    # Also get team issues without a project
+    team_info = get_team_info(project, key)
+    if team_info:
+        _, team_key = team_info
+        team_issues = _get_team_issues_without_project(team_key, key)
+        for issue in team_issues:
+            if issue.id not in issues_by_id:
+                issues_by_id[issue.id] = issue
+
+    issues = list(issues_by_id.values())
+
+    # Sort by status first (In Review, In Progress, Todo, Backlog), then by sort_order within each status
+    issues.sort(key=lambda i: (STATUS_ORDER.get(i.state, 999), i.sort_order))
+
+    return issues
+
+
+def _get_team_issues_without_project(
+    team_key: str,
+    api_key: str,
+) -> list[Issue]:
+    """Get Linear issues for a team that have no project assigned."""
+    try:
+        response = httpx.post(
+            "https://api.linear.app/graphql",
+            json={
+                "query": TEAM_ISSUES_QUERY,
+                "variables": {"teamKey": team_key},
+            },
+            headers={"Authorization": api_key},
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except httpx.TimeoutException:
+        logger.error("Linear API request timed out")
+        return []
+    except httpx.HTTPStatusError as e:
+        logger.error("Linear API returned error: %s", e.response.status_code)
+        return []
+    except httpx.RequestError as e:
+        logger.error("Linear API request failed: %s", e)
+        return []
+    except json.JSONDecodeError as e:
+        logger.error("Failed to parse Linear response: %s", e)
+        return []
+
+    issues = []
+    teams = data.get("data", {}).get("teams", {}).get("nodes", [])
+    for team in teams:
+        for issue in team.get("issues", {}).get("nodes", []):
+            # Skip issues that have a project
+            if issue.get("project"):
+                continue
+
             assignee = issue.get("assignee")
             assignee_name = (
                 assignee.get("displayName") or assignee.get("name")
@@ -251,9 +353,6 @@ def get_project_issues(
                     sort_order=issue.get("sortOrder", 0.0),
                 )
             )
-
-    # Sort by status first (In Review, In Progress, Todo, Backlog), then by sort_order within each status
-    issues.sort(key=lambda i: (STATUS_ORDER.get(i.state, 999), i.sort_order))
 
     return issues
 
@@ -340,10 +439,10 @@ def complete_issue(issue_id: str, team_id: str, api_key: str | None = None) -> b
     return set_issue_state(issue_id, team_id, "done", api_key)
 
 
-def get_team_id(
+def get_team_info(
     project_name: str | None = None, api_key: str | None = None
-) -> str | None:
-    """Get the team ID for a project. Returns None on error."""
+) -> tuple[str, str] | None:
+    """Get the team ID and key for a project. Returns (team_id, team_key) or None on error."""
     key = api_key or os.environ.get("LINEAR_API_KEY")
     if not key:
         logger.error("LINEAR_API_KEY not set")
@@ -378,11 +477,19 @@ def get_team_id(
             logger.error("No teams found for project '%s'", project)
             return None
 
-        return teams[0]["id"]
+        return teams[0]["id"], teams[0]["key"]
 
     except httpx.RequestError as e:
-        logger.error("Failed to get team ID: %s", e)
+        logger.error("Failed to get team info: %s", e)
         return None
+
+
+def get_team_id(
+    project_name: str | None = None, api_key: str | None = None
+) -> str | None:
+    """Get the team ID for a project. Returns None on error."""
+    info = get_team_info(project_name, api_key)
+    return info[0] if info else None
 
 
 def get_team_members(api_key: str | None = None) -> list[dict]:

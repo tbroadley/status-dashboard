@@ -62,11 +62,6 @@ def _load_hidden_review_requests() -> set[tuple[str, int]]:
 
 
 HIDDEN_REVIEW_REQUESTS = _load_hidden_review_requests()
-HIDE_REVIEWED_PRS = os.environ.get("HIDE_REVIEWED_PRS", "").lower() in (
-    "1",
-    "true",
-    "yes",
-)
 
 
 def _setup_logging() -> None:
@@ -523,10 +518,7 @@ class StatusDashboard(App):
         table.clear()
 
         visible_prs = [
-            pr
-            for pr in prs
-            if (pr.repository, pr.number) not in HIDDEN_REVIEW_REQUESTS
-            and not (HIDE_REVIEWED_PRS and pr.has_user_reviewed)
+            pr for pr in prs if (pr.repository, pr.number) not in HIDDEN_REVIEW_REQUESTS
         ]
 
         if not visible_prs:

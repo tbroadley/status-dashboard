@@ -38,7 +38,6 @@ Environment variables (`.env` or `$XDG_CONFIG_HOME/status-dashboard/.env`):
 - `LINEAR_PROJECT` - Required (project name to display)
 - `GITHUB_ORG` - Optional (defaults to METR)
 - `HIDDEN_REVIEW_REQUESTS` - Optional JSON array of [repo, pr_number]
-- `HIDE_REVIEWED_PRS` - Optional (1/true/yes to hide PRs you've already reviewed)
 
 Logs: `$XDG_STATE_HOME/status-dashboard/status-dashboard.log` (rotating, 1MB, 3 backups)
 

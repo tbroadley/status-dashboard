@@ -353,7 +353,7 @@ def get_notifications(org: str | None = None) -> list[Notification]:
 
     notifications = []
     for item in result:
-        if item.get("reason") == "review_requested":
+        if item.get("reason") in ("review_requested", "author"):
             continue
 
         subject = item.get("subject", {})

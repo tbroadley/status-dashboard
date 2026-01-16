@@ -29,6 +29,7 @@ class PullRequest:
     needs_response: bool = False
     has_review: bool = False
     ci_status: str | None = None
+    unresolved_comment_count: int = 0
 
 
 @dataclass
@@ -130,6 +131,11 @@ query {{
             }}
           }}
         }}
+        reviewThreads(first: 100) {{
+          nodes {{
+            isResolved
+          }}
+        }}
       }}
     }}
   }}
@@ -199,6 +205,11 @@ def get_my_prs(org: str | None = None) -> list[PullRequest]:
             if rollup:
                 ci_state = rollup.get("state")
 
+        review_threads = pr.get("reviewThreads", {}).get("nodes", [])
+        unresolved_count = sum(
+            1 for thread in review_threads if not thread.get("isResolved", True)
+        )
+
         prs.append(
             PullRequest(
                 number=pr["number"],
@@ -210,6 +221,7 @@ def get_my_prs(org: str | None = None) -> list[PullRequest]:
                 needs_response=has_changes_requested or has_comments,
                 has_review=len(human_reviews) > 0,
                 ci_status=ci_state,
+                unresolved_comment_count=unresolved_count,
             )
         )
 

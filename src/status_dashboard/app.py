@@ -435,7 +435,7 @@ class StatusDashboard(App):
 
         # Set up table columns - auto-sized based on content
         my_prs = self.query_one("#my-prs-table", DataTable)
-        my_prs.add_columns("#", "PR", "Title", "Repo", "Status", "CI")
+        my_prs.add_columns("#", "PR", "Title", "Repo", "Status", "CI", "Cmt")
         self._setup_table(my_prs)
 
         reviews = self.query_one("#review-requests-table", DataTable)
@@ -474,7 +474,9 @@ class StatusDashboard(App):
         table.clear()
 
         if not prs:
-            table.add_row("", "", Text("No open PRs", style="dim italic"), "", "", "")
+            table.add_row(
+                "", "", Text("No open PRs", style="dim italic"), "", "", "", ""
+            )
         else:
             for pr in prs:
                 if pr.is_draft:
@@ -495,6 +497,12 @@ class StatusDashboard(App):
                     "EXPECTED": "...",
                 }.get(pr.ci_status, "")
 
+                comment_display = (
+                    str(pr.unresolved_comment_count)
+                    if pr.unresolved_comment_count > 0
+                    else ""
+                )
+
                 repo = _short_repo(pr.repository)
                 table.add_row(
                     "",
@@ -503,6 +511,7 @@ class StatusDashboard(App):
                     repo,
                     status,
                     ci_display,
+                    comment_display,
                     key=pr.url,
                 )
 

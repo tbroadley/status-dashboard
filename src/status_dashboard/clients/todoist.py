@@ -62,7 +62,11 @@ def get_today_tasks(api_token: str | None = None) -> list[Task]:
 
 
 def get_tasks_for_date(target_date: date, api_token: str | None = None) -> list[Task]:
-    """Get Todoist tasks due on or before the target date, sorted by day_order."""
+    """Get Todoist tasks due on the target date, sorted by day_order.
+
+    For today's date, also includes overdue tasks (due before today).
+    For future dates, only returns tasks due exactly on that date.
+    """
     token = api_token or _get_token()
     if not token:
         logger.warning("TODOIST_API_TOKEN not set, skipping Todoist tasks")
@@ -94,6 +98,8 @@ def get_tasks_for_date(target_date: date, api_token: str | None = None) -> list[
         return []
 
     target_date_str = target_date.isoformat()
+    today_str = date.today().isoformat()
+    is_today = target_date_str == today_str
     tasks = []
 
     for item in data.get("items", []):
@@ -106,8 +112,12 @@ def get_tasks_for_date(target_date: date, api_token: str | None = None) -> list[
 
         due_date_raw = due.get("date", "")
         due_date = due_date_raw[:10]
-        if due_date > target_date_str:
-            continue
+        if is_today:
+            if due_date > target_date_str:
+                continue
+        else:
+            if due_date != target_date_str:
+                continue
 
         due_time = _extract_local_time(due_date_raw)
 

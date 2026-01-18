@@ -58,13 +58,17 @@ def _extract_local_time(due_date_str: str) -> str | None:
 
 def get_today_tasks(api_token: str | None = None) -> list[Task]:
     """Get Todoist tasks due today, sorted by day_order (Today view order)."""
+    return get_tasks_for_date(date.today(), api_token)
+
+
+def get_tasks_for_date(target_date: date, api_token: str | None = None) -> list[Task]:
+    """Get Todoist tasks due on or before the target date, sorted by day_order."""
     token = api_token or _get_token()
     if not token:
         logger.warning("TODOIST_API_TOKEN not set, skipping Todoist tasks")
         return []
 
     try:
-        # Use Sync API to get day_order field
         response = httpx.post(
             "https://api.todoist.com/sync/v9/sync",
             headers={"Authorization": f"Bearer {token}"},
@@ -89,7 +93,7 @@ def get_today_tasks(api_token: str | None = None) -> list[Task]:
         logger.error("Failed to parse Todoist response: %s", e)
         return []
 
-    today = date.today().isoformat()
+    target_date_str = target_date.isoformat()
     tasks = []
 
     for item in data.get("items", []):
@@ -100,16 +104,13 @@ def get_today_tasks(api_token: str | None = None) -> list[Task]:
         if not due:
             continue
 
-        # Check if due today or overdue
         due_date_raw = due.get("date", "")
-        due_date = due_date_raw[:10]  # Get just the date part
-        if due_date > today:
+        due_date = due_date_raw[:10]
+        if due_date > target_date_str:
             continue
 
-        # Extract time if set (Todoist returns UTC datetime for timed tasks)
         due_time = _extract_local_time(due_date_raw)
 
-        # Build new URL format: https://app.todoist.com/app/task/{slug}-{v2_id}
         v2_id = item.get("v2_id", item["id"])
         slug = _slugify(item["content"])
         url = f"https://app.todoist.com/app/task/{slug}-{v2_id}"
@@ -127,7 +128,6 @@ def get_today_tasks(api_token: str | None = None) -> list[Task]:
             )
         )
 
-    # Sort by day_order (Today view order)
     tasks.sort(key=lambda t: t.day_order)
 
     return tasks

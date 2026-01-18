@@ -7,7 +7,7 @@ import re
 import sys
 import webbrowser
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from itertools import groupby
 from pathlib import Path
 
@@ -298,6 +298,10 @@ class TodoistDataTable(VimDataTable):
         Binding("K", "app.move_task_up", "Move Up", show=False),
         Binding("shift+down", "app.move_task_down", "Move Down"),
         Binding("shift+up", "app.move_task_up", "Move Up"),
+        Binding("h", "app.todoist_previous_day", "Prev Day"),
+        Binding("l", "app.todoist_next_day", "Next Day"),
+        Binding("left", "app.todoist_previous_day", "Prev Day", show=False),
+        Binding("right", "app.todoist_next_day", "Next Day", show=False),
     ]
 
 
@@ -441,6 +445,7 @@ class StatusDashboard(App):
         self._todoist_pending_orders: dict[str, int] | None = None
         self._todoist_debounce_handle: object | None = None
         self._todoist_restore_key: str | None = None
+        self._todoist_selected_date: date = date.today()
         self._linear_issues: list[linear.Issue] = []
         self._linear_debounce_handle: object | None = None
 
@@ -622,9 +627,41 @@ class StatusDashboard(App):
 
     @work(exclusive=False)
     async def _refresh_todoist(self) -> None:
-        tasks = await asyncio.to_thread(todoist.get_today_tasks)
+        selected_date = self._todoist_selected_date
+        tasks = await asyncio.to_thread(todoist.get_tasks_for_date, selected_date)
         self._todoist_tasks = tasks
+        self._update_todoist_panel_title()
         self._render_todoist_table()
+
+    def _update_todoist_panel_title(self) -> None:
+        panel = self.query_one("#todoist", Panel)
+        title_widget = panel.query_one(".panel-title", Static)
+        today = date.today()
+        selected = self._todoist_selected_date
+        if selected == today:
+            title_widget.update("Todoist (Today)")
+        elif selected == today + timedelta(days=1):
+            title_widget.update("Todoist (Tomorrow)")
+        else:
+            title_widget.update(f"Todoist ({selected.strftime('%a %b %d')})")
+
+    def action_todoist_previous_day(self) -> None:
+        focused = self.focused
+        if not isinstance(focused, DataTable) or focused.id != "todoist-table":
+            return
+        today = date.today()
+        if self._todoist_selected_date <= today:
+            self.notify("Cannot go before today", severity="warning")
+            return
+        self._todoist_selected_date -= timedelta(days=1)
+        self._refresh_todoist()
+
+    def action_todoist_next_day(self) -> None:
+        focused = self.focused
+        if not isinstance(focused, DataTable) or focused.id != "todoist-table":
+            return
+        self._todoist_selected_date += timedelta(days=1)
+        self._refresh_todoist()
 
     def _render_todoist_table(self, preserve_cursor: bool = True) -> None:
         table: DataTable = self.query_one("#todoist-table", DataTable)

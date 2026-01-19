@@ -1028,6 +1028,7 @@ class StatusDashboard(App):
         if len(parts) >= 2:
             task_id = parts[1]
             task_name = self._get_row_content(focused)
+            self._todoist_restore_key = self._get_row_key_above(focused)
             self._do_defer_todoist_task(task_id, task_name)
 
     @work(exclusive=False)

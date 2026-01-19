@@ -660,6 +660,7 @@ class StatusDashboard(App):
             self.notify("Cannot go before today", severity="warning")
             return
         self._todoist_selected_date -= timedelta(days=1)
+        self._update_todoist_panel_title()
         self._refresh_todoist()
 
     def action_todoist_next_day(self) -> None:
@@ -667,6 +668,7 @@ class StatusDashboard(App):
         if not isinstance(focused, DataTable) or focused.id != "todoist-table":
             return
         self._todoist_selected_date += timedelta(days=1)
+        self._update_todoist_panel_title()
         self._refresh_todoist()
 
     def _render_todoist_table(self, preserve_cursor: bool = True) -> None:

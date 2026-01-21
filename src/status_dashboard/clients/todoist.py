@@ -74,7 +74,7 @@ def get_tasks_for_date(target_date: date, api_token: str | None = None) -> list[
 
     try:
         response = httpx.post(
-            "https://api.todoist.com/sync/v9/sync",
+            "https://api.todoist.com/api/v1/sync",
             headers={"Authorization": f"Bearer {token}"},
             data={
                 "sync_token": "*",
@@ -152,7 +152,7 @@ def complete_task(task_id: str, api_token: str | None = None) -> bool:
 
     try:
         response = httpx.post(
-            f"https://api.todoist.com/rest/v2/tasks/{task_id}/close",
+            f"https://api.todoist.com/api/v1/tasks/{task_id}/close",
             headers={"Authorization": f"Bearer {token}"},
             timeout=10,
         )
@@ -189,7 +189,7 @@ def defer_task(task_id: str, api_token: str | None = None) -> bool:
 
     try:
         response = httpx.post(
-            f"https://api.todoist.com/rest/v2/tasks/{task_id}",
+            f"https://api.todoist.com/api/v1/tasks/{task_id}",
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
@@ -218,7 +218,7 @@ def create_task(
 
     try:
         response = httpx.post(
-            "https://api.todoist.com/rest/v2/tasks",
+            "https://api.todoist.com/api/v1/tasks",
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
@@ -250,7 +250,7 @@ def delete_task(task_id: str, api_token: str | None = None) -> bool:
 
     try:
         response = httpx.delete(
-            f"https://api.todoist.com/rest/v2/tasks/{task_id}",
+            f"https://api.todoist.com/api/v1/tasks/{task_id}",
             headers={"Authorization": f"Bearer {token}"},
             timeout=10,
         )
@@ -273,7 +273,7 @@ def reopen_task(task_id: str, api_token: str | None = None) -> bool:
 
     try:
         response = httpx.post(
-            f"https://api.todoist.com/rest/v2/tasks/{task_id}/reopen",
+            f"https://api.todoist.com/api/v1/tasks/{task_id}/reopen",
             headers={"Authorization": f"Bearer {token}"},
             timeout=10,
         )
@@ -296,7 +296,7 @@ def get_task(task_id: str, api_token: str | None = None) -> dict[str, Any] | Non
 
     try:
         response = httpx.get(
-            f"https://api.todoist.com/rest/v2/tasks/{task_id}",
+            f"https://api.todoist.com/api/v1/tasks/{task_id}",
             headers={"Authorization": f"Bearer {token}"},
             timeout=10,
         )
@@ -322,7 +322,7 @@ def set_due_date(
     try:
         payload = {"due_date": due_date} if due_date else {"due_string": "no date"}
         response = httpx.post(
-            f"https://api.todoist.com/rest/v2/tasks/{task_id}",
+            f"https://api.todoist.com/api/v1/tasks/{task_id}",
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
@@ -351,7 +351,7 @@ def reschedule_to_today(task_id: str, api_token: str | None = None) -> bool:
 
     try:
         response = httpx.post(
-            f"https://api.todoist.com/rest/v2/tasks/{task_id}",
+            f"https://api.todoist.com/api/v1/tasks/{task_id}",
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
@@ -386,7 +386,7 @@ def update_day_orders(
 
     try:
         response = httpx.post(
-            "https://api.todoist.com/sync/v9/sync",
+            "https://api.todoist.com/api/v1/sync",
             headers={"Authorization": f"Bearer {token}"},
             data={"commands": json.dumps([command])},
             timeout=10,

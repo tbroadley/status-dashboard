@@ -8,6 +8,7 @@ import sys
 import webbrowser
 from collections import defaultdict
 from datetime import date, timedelta
+import uuid
 from itertools import groupby
 from pathlib import Path
 
@@ -452,6 +453,7 @@ class StatusDashboard(App):
         self._todoist_debounce_handle: object | None = None
         self._todoist_restore_key: str | None = None
         self._todoist_selected_date: date = date.today()
+        self._todoist_optimistic_tasks: dict[str, todoist.Task] = {}
         self._linear_issues: list[linear.Issue] = []
         self._linear_debounce_handle: object | None = None
 
@@ -1140,7 +1142,14 @@ class StatusDashboard(App):
         """Send current task order to Todoist API."""
         self._todoist_debounce_handle = None
 
-        new_orders = {task.id: idx for idx, task in enumerate(self._todoist_tasks)}
+        new_orders = {
+            task.id: idx
+            for idx, task in enumerate(self._todoist_tasks)
+            if not task.id.startswith("temp-")
+        }
+
+        if not new_orders:
+            return
 
         success = await asyncio.to_thread(todoist.update_day_orders, new_orders)
         if not success:
@@ -1573,33 +1582,66 @@ class StatusDashboard(App):
         if result:
             content = result["content"]
             due_string = result["due_string"]
-            self._do_create_todoist_task(content, due_string, insert_position)
+
+            temp_id = f"temp-{uuid.uuid4()}"
+            optimistic_task = todoist.Task(
+                id=temp_id,
+                content=content,
+                is_completed=False,
+                url="",
+                day_order=insert_position,
+                due_date=self._todoist_selected_date.isoformat(),
+                due_time=None,
+                comment_count=0,
+            )
+
+            self._todoist_tasks.insert(insert_position, optimistic_task)
+            self._todoist_optimistic_tasks[temp_id] = optimistic_task
+            self._render_todoist_table(preserve_cursor=False)
+
+            table = self.query_one("#todoist-table", TodoistDataTable)
+            table.move_cursor(row=insert_position)
+
+            self._do_create_todoist_task(content, due_string, temp_id)
 
     @work(exclusive=False)
     async def _do_create_todoist_task(
-        self, content: str, due_string: str, insert_position: int
+        self, content: str, due_string: str, temp_id: str
     ) -> None:
         new_task_id = await asyncio.to_thread(todoist.create_task, content, due_string)
         if not new_task_id:
             self.notify("Failed to create task", severity="error")
+            self._todoist_tasks = [t for t in self._todoist_tasks if t.id != temp_id]
+            self._todoist_optimistic_tasks.pop(temp_id, None)
+            self._render_todoist_table()
             return
 
         self.notify("Task created!")
 
-        if not self._todoist_tasks:
-            self._refresh_todoist()
-            return
+        table = self.query_one("#todoist-table", TodoistDataTable)
+        selected_key = self._get_selected_row_key(table)
+        was_selected = selected_key == f"todoist:{temp_id}:"
+
+        updated_task: todoist.Task | None = None
+        for task in self._todoist_tasks:
+            if task.id == temp_id:
+                task.id = new_task_id
+                task.url = f"https://app.todoist.com/app/task/{new_task_id}"
+                updated_task = task
+                break
+
+        self._todoist_optimistic_tasks.pop(temp_id, None)
 
         new_orders: dict[str, int] = {}
         for idx, task in enumerate(self._todoist_tasks):
-            if idx < insert_position:
+            if not task.id.startswith("temp-"):
                 new_orders[task.id] = idx
-            else:
-                new_orders[task.id] = idx + 1
-        new_orders[new_task_id] = insert_position
 
         await asyncio.to_thread(todoist.update_day_orders, new_orders)
-        self._refresh_todoist()
+
+        if was_selected and updated_task:
+            self._todoist_restore_key = f"todoist:{new_task_id}:{updated_task.url}"
+        self._render_todoist_table()
 
     def action_create_linear_issue(self) -> None:
         """Show modal to create a new Linear issue."""

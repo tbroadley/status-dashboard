@@ -1713,40 +1713,82 @@ class StatusDashboard(App):
             content = result["content"]
             due_string = result["due_string"]
 
-            temp_id = f"temp-{uuid.uuid4()}"
-            optimistic_task = todoist.Task(
-                id=temp_id,
-                content=content,
-                is_completed=False,
-                url="",
-                day_order=insert_position,
-                due_date=self._todoist_selected_date.isoformat(),
-                due_time=None,
-                comment_count=0,
-            )
+            # Calculate the actual due date for the optimistic task
+            optimistic_due_date = self._calculate_due_date(due_string)
 
-            self._todoist_tasks.insert(insert_position, optimistic_task)
-            self._todoist_optimistic_tasks[temp_id] = optimistic_task
-            self._render_todoist_table(preserve_cursor=False)
+            # Only show optimistic task if it will appear in the current view
+            show_optimistic = optimistic_due_date == self._todoist_selected_date
 
-            table = self.query_one("#todoist-table", TodoistDataTable)
-            table.move_cursor(row=insert_position)
+            if show_optimistic:
+                temp_id = f"temp-{uuid.uuid4()}"
+                optimistic_task = todoist.Task(
+                    id=temp_id,
+                    content=content,
+                    is_completed=False,
+                    url="",
+                    day_order=insert_position,
+                    due_date=optimistic_due_date.isoformat(),
+                    due_time=None,
+                    comment_count=0,
+                )
 
-            self._do_create_todoist_task(content, due_string, temp_id)
+                self._todoist_tasks.insert(insert_position, optimistic_task)
+                self._todoist_optimistic_tasks[temp_id] = optimistic_task
+                self._render_todoist_table(preserve_cursor=False)
+
+                table = self.query_one("#todoist-table", TodoistDataTable)
+                table.move_cursor(row=insert_position)
+
+                self._do_create_todoist_task(content, due_string, temp_id)
+            else:
+                # Task is for a different day, just create it without optimistic UI
+                self._do_create_todoist_task(content, due_string, None)
+
+    def _calculate_due_date(self, due_string: str) -> date:
+        """Calculate the actual due date from a due_string.
+
+        This mirrors Todoist's natural language parsing to predict
+        where the task will appear.
+        """
+        today = date.today()
+
+        if due_string == "today":
+            return today
+        elif due_string == "tomorrow":
+            return today + timedelta(days=1)
+        elif due_string == "monday":
+            # Find the upcoming Monday
+            days_until_monday = (7 - today.weekday()) % 7
+            if days_until_monday == 0:
+                days_until_monday = 7  # If today is Monday, go to next Monday
+            return today + timedelta(days=days_until_monday)
+        elif due_string == "next week":
+            # Todoist interprets "next week" as 7 days from now
+            return today + timedelta(days=7)
+        else:
+            # Default to today for unknown strings
+            return today
 
     @work(exclusive=False)
     async def _do_create_todoist_task(
-        self, content: str, due_string: str, temp_id: str
+        self, content: str, due_string: str, temp_id: str | None
     ) -> None:
         new_task_id = await asyncio.to_thread(todoist.create_task, content, due_string)
         if not new_task_id:
             self.notify("Failed to create task", severity="error")
-            self._todoist_tasks = [t for t in self._todoist_tasks if t.id != temp_id]
-            self._todoist_optimistic_tasks.pop(temp_id, None)
-            self._render_todoist_table()
+            if temp_id:
+                self._todoist_tasks = [
+                    t for t in self._todoist_tasks if t.id != temp_id
+                ]
+                self._todoist_optimistic_tasks.pop(temp_id, None)
+                self._render_todoist_table()
             return
 
         self.notify("Task created!")
+
+        # If no optimistic task was created, we're done
+        if not temp_id:
+            return
 
         table = self.query_one("#todoist-table", TodoistDataTable)
         selected_key = self._get_selected_row_key(table)

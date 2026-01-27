@@ -63,7 +63,7 @@ class CreateTodoistTaskModal(ModalScreen):
                 [
                     ("Today", "today"),
                     ("Tomorrow", "tomorrow"),
-                    ("Next Monday", "next monday"),
+                    ("Monday", "monday"),
                     ("Next Week", "next week"),
                 ],
                 value="today",

@@ -8,11 +8,13 @@ import sys
 import webbrowser
 from collections import defaultdict
 from datetime import date, timedelta
+from importlib import metadata
 import uuid
 from itertools import groupby
 from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
+import httpx
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
@@ -101,6 +103,40 @@ def _setup_logging() -> None:
 
 
 _setup_logging()
+
+_logger = logging.getLogger(__name__)
+
+
+def _get_current_version() -> str | None:
+    """Get the currently installed version of status-dashboard."""
+    try:
+        return metadata.version("status-dashboard")
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _get_remote_version() -> str | None:
+    """Fetch the latest version from the GitHub repository."""
+    url = "https://raw.githubusercontent.com/tbroadley/status-dashboard/main/pyproject.toml"
+    try:
+        resp = httpx.get(url, timeout=10, follow_redirects=True)
+        resp.raise_for_status()
+        content = resp.text
+        for line in content.splitlines():
+            if line.startswith("version"):
+                # Parse: version = "0.1.0"
+                match = re.search(r'version\s*=\s*["\']([^"\']+)["\']', line)
+                if match:
+                    return match.group(1)
+        return None
+    except (httpx.HTTPError, httpx.TimeoutException) as e:
+        _logger.warning(f"Failed to fetch remote version: {e}")
+        return None
+
+
+def _version_tuple(v: str) -> tuple[int, ...]:
+    """Convert version string to tuple for comparison."""
+    return tuple(int(x) for x in v.split(".") if x.isdigit())
 
 
 class Footer(TextualFooter):
@@ -349,6 +385,36 @@ class GoalsDataTable(VimDataTable):
     ]
 
 
+class UpdateBanner(Static):
+    """Banner showing when a new version is available."""
+
+    DEFAULT_CSS = """
+    UpdateBanner {
+        background: $warning;
+        color: $text;
+        text-align: center;
+        padding: 0 1;
+        display: none;
+    }
+
+    UpdateBanner.-visible {
+        display: block;
+    }
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._new_version: str | None = None
+
+    def show_update(self, new_version: str) -> None:
+        self._new_version = new_version
+        self.update(f"New version available: v{new_version} (press R to upgrade)")
+        self.add_class("-visible")
+
+    def hide(self) -> None:
+        self.remove_class("-visible")
+
+
 class Panel(Container):
     """A panel with a title and data table."""
 
@@ -453,6 +519,7 @@ class StatusDashboard(App):
     ]
 
     def compose(self) -> ComposeResult:
+        yield UpdateBanner(id="update-banner")
         yield Panel("Weekly Goals", "goals", table_class=GoalsDataTable)
         with VerticalScroll(can_focus=False):
             yield Panel("My PRs", "my-prs", table_class=MyPRsDataTable)
@@ -518,6 +585,7 @@ class StatusDashboard(App):
 
         self.refresh_all()
         self.set_interval(60, self.refresh_all)
+        self._check_for_updates()
 
     def refresh_all(self) -> None:
         self._refresh_goals()
@@ -526,6 +594,24 @@ class StatusDashboard(App):
         self._refresh_gh_notifications()
         self._refresh_todoist()
         self._refresh_linear()
+
+    @work(exclusive=False)
+    async def _check_for_updates(self) -> None:
+        """Check for updates and show banner if new version is available."""
+        current = _get_current_version()
+        if not current:
+            return
+
+        remote = await asyncio.to_thread(_get_remote_version)
+        if not remote:
+            return
+
+        try:
+            if _version_tuple(remote) > _version_tuple(current):
+                banner = self.query_one("#update-banner", UpdateBanner)
+                banner.show_update(remote)
+        except (ValueError, TypeError):
+            pass
 
     def _refresh_goals(self) -> None:
         """Refresh the goals table based on current week/review state."""

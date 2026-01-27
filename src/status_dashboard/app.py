@@ -342,6 +342,10 @@ class GoalsDataTable(VimDataTable):
         Binding("a", "app.create_goal", "Add Goal"),
         Binding("c", "app.complete_goal", "Complete"),
         Binding("d", "app.delete_goal", "Delete"),
+        Binding("J", "app.move_goal_down", "Move Down", show=False),
+        Binding("K", "app.move_goal_up", "Move Up", show=False),
+        Binding("shift+down", "app.move_goal_down", "Move Down"),
+        Binding("shift+up", "app.move_goal_up", "Move Up"),
     ]
 
 
@@ -2057,6 +2061,65 @@ class StatusDashboard(App):
             self._refresh_goals()
         else:
             self.notify("Failed to delete goal", severity="error")
+
+    def action_move_goal_down(self) -> None:
+        """Move the selected goal down."""
+        self._move_goal(1)
+
+    def action_move_goal_up(self) -> None:
+        """Move the selected goal up."""
+        self._move_goal(-1)
+
+    def _move_goal(self, direction: int) -> None:
+        """Move the selected goal up (-1) or down (+1)."""
+        focused = self.focused
+        if not isinstance(focused, DataTable) or focused.id != "goals-table":
+            self.notify("Can only move goals", severity="warning")
+            return
+
+        if focused.cursor_row is None or focused.row_count == 0:
+            return
+
+        # Get the list of goals that can be reordered (incomplete goals in normal view)
+        if self._goals_showing_review:
+            # In review mode, we can reorder all goals (they're from last week)
+            movable_goals = [g for g in self._goals]
+        else:
+            # In normal mode, only incomplete goals are shown and movable
+            movable_goals = [g for g in self._goals if not g.is_completed]
+
+        current_row = focused.cursor_row
+        target_row = current_row + direction
+
+        if target_row < 0 or target_row >= len(movable_goals):
+            return
+
+        # Don't allow moving onto the prompt row
+        cell_key = focused.coordinate_to_cell_key(Coordinate(target_row, 0))
+        if cell_key.row_key and str(cell_key.row_key.value) == "goal:prompt":
+            return
+
+        # Swap in the local list
+        movable_goals[current_row], movable_goals[target_row] = (
+            movable_goals[target_row],
+            movable_goals[current_row],
+        )
+
+        # Update main goals list to reflect new order
+        if self._goals_showing_review:
+            self._goals = movable_goals
+        else:
+            # Rebuild _goals with updated order for incomplete goals
+            completed = [g for g in self._goals if g.is_completed]
+            self._goals = movable_goals + completed
+
+        # Re-render and move cursor
+        self._render_goals_table()
+        focused.move_cursor(row=target_row)
+
+        # Persist to database
+        new_orders = {goal.id: idx for idx, goal in enumerate(movable_goals)}
+        goals_db.update_sort_orders(new_orders)
 
 
 def main():

@@ -156,3 +156,22 @@ def delete_goal(goal_id: str) -> bool:
         return cursor.rowcount > 0
     finally:
         conn.close()
+
+
+def update_sort_orders(ids_to_orders: dict[str, int]) -> bool:
+    """Update sort orders for multiple goals. Returns True on success."""
+    if not ids_to_orders:
+        return True
+    conn = _get_connection()
+    try:
+        for goal_id, sort_order in ids_to_orders.items():
+            conn.execute(
+                "UPDATE goals SET sort_order = ? WHERE id = ?",
+                (sort_order, goal_id),
+            )
+        conn.commit()
+        return True
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()

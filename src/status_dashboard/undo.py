@@ -48,6 +48,12 @@ class LinearMoveAction(UndoAction):
     action_type: str = "linear_move"
 
 
+@dataclass
+class GoalCompleteAction(UndoAction):
+    goal_id: str = ""
+    action_type: str = "goal_complete"
+
+
 class UndoStack:
     def __init__(self, max_size: int = 15):
         self._stack: list[UndoAction] = []

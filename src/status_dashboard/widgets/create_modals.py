@@ -221,3 +221,71 @@ class CreateLinearIssueModal(ModalScreen):
             # Simulate create button press
             create_btn = self.query_one("#create-btn", Button)
             self.on_button_pressed(Button.Pressed(create_btn))
+
+
+class CreateGoalModal(ModalScreen[dict[str, str] | None]):
+    """Modal for creating a new weekly goal."""
+
+    BINDINGS = [("escape", "dismiss_modal", "Close")]
+
+    def action_dismiss_modal(self) -> None:
+        self.dismiss(None)
+
+    CSS = """
+    CreateGoalModal {
+        align: center middle;
+    }
+
+    #dialog {
+        background: $surface;
+        border: thick $primary;
+        width: 60;
+        height: auto;
+        padding: 1 2;
+    }
+
+    #dialog Label {
+        margin-top: 1;
+    }
+
+    #dialog Input {
+        margin-bottom: 1;
+    }
+
+    #buttons {
+        layout: horizontal;
+        align: center middle;
+        height: auto;
+        margin-top: 1;
+    }
+
+    #buttons Button {
+        margin: 0 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Container(id="dialog"):
+            yield Label("Add Weekly Goal", id="title")
+            yield Label("Goal:")
+            yield Input(placeholder="Enter your goal for this week", id="goal-input")
+            with Vertical(id="buttons"):
+                yield Button("Add", variant="primary", id="create-btn")
+                yield Button("Cancel", id="cancel-btn")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "create-btn":
+            goal_input = self.query_one("#goal-input", Input)
+            content = goal_input.value.strip()
+            if content:
+                self.dismiss({"content": content})
+            else:
+                goal_input.focus()
+        else:
+            self.dismiss(None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter key in the input."""
+        if event.input.id == "goal-input":
+            create_btn = self.query_one("#create-btn", Button)
+            self.on_button_pressed(Button.Pressed(create_btn))

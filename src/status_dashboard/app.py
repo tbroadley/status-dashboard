@@ -23,7 +23,9 @@ from textual.widgets import DataTable, Footer as TextualFooter, Static
 from textual.widgets._footer import FooterKey, FooterLabel, KeyGroup
 
 from status_dashboard.clients import github, linear, todoist
+from status_dashboard.db import goals as goals_db
 from status_dashboard.undo import (
+    GoalCompleteAction,
     LinearAssignAction,
     LinearMoveAction,
     LinearSetStateAction,
@@ -33,6 +35,7 @@ from status_dashboard.undo import (
     UndoStack,
 )
 from status_dashboard.widgets.create_modals import (
+    CreateGoalModal,
     CreateLinearIssueModal,
     CreateTodoistTaskModal,
 )
@@ -332,6 +335,16 @@ class LinearDataTable(VimDataTable):
     ]
 
 
+class GoalsDataTable(VimDataTable):
+    """DataTable for weekly goals."""
+
+    BINDINGS = [
+        Binding("a", "app.create_goal", "Add Goal"),
+        Binding("c", "app.complete_goal", "Complete"),
+        Binding("d", "app.delete_goal", "Delete"),
+    ]
+
+
 class Panel(Container):
     """A panel with a title and data table."""
 
@@ -360,6 +373,9 @@ def _short_repo(repo: str) -> str:
 class StatusDashboard(App):
     """Terminal dashboard for PRs, Todoist, and Linear."""
 
+    _goals: list[goals_db.Goal] = []  # pyright: ignore[reportUninitializedInstanceVariable]
+    _goals_showing_review: bool = False  # pyright: ignore[reportUninitializedInstanceVariable]
+
     CSS = """
     Screen {
         layout: vertical;
@@ -374,6 +390,16 @@ class StatusDashboard(App):
         height: auto;
         min-height: 4;
         margin-bottom: 1;
+    }
+
+    #goals {
+        height: auto;
+        max-height: 8;
+    }
+
+    #goals-table {
+        height: auto;
+        max-height: 5;
     }
 
     #linear {
@@ -423,6 +449,7 @@ class StatusDashboard(App):
     ]
 
     def compose(self) -> ComposeResult:
+        yield Panel("Weekly Goals", "goals", table_class=GoalsDataTable)
         with VerticalScroll(can_focus=False):
             yield Panel("My PRs", "my-prs", table_class=MyPRsDataTable)
             yield Panel(
@@ -456,6 +483,13 @@ class StatusDashboard(App):
         self._todoist_optimistic_tasks: dict[str, todoist.Task] = {}
         self._linear_issues: list[linear.Issue] = []
         self._linear_debounce_handle: object | None = None
+        self._goals: list[goals_db.Goal] = []
+        self._goals_showing_review: bool = False
+
+        # Set up goals table
+        goals_table = self.query_one("#goals-table", DataTable)
+        goals_table.add_columns("#", "", "Goal")
+        self._setup_table(goals_table)
 
         # Set up table columns - auto-sized based on content
         my_prs = self.query_one("#my-prs-table", DataTable)
@@ -482,11 +516,101 @@ class StatusDashboard(App):
         self.set_interval(60, self.refresh_all)
 
     def refresh_all(self) -> None:
+        self._refresh_goals()
         self._refresh_my_prs()
         self._refresh_review_requests()
         self._refresh_gh_notifications()
         self._refresh_todoist()
         self._refresh_linear()
+
+    def _refresh_goals(self) -> None:
+        """Refresh the goals table based on current week/review state."""
+        today = date.today()
+        is_monday = today.weekday() == 0
+        this_week = goals_db.get_week_start(today)
+        this_week_goals = goals_db.get_goals_for_week(this_week)
+
+        # Show review only if Monday AND no goals yet for this week
+        if is_monday and not this_week_goals:
+            last_week = this_week - timedelta(days=7)
+            self._goals = goals_db.get_goals_for_week(last_week)
+            self._goals_showing_review = True
+        else:
+            self._goals = this_week_goals
+            self._goals_showing_review = False
+
+        self._render_goals_table()
+
+    def _render_goals_table(self) -> None:
+        """Render the goals table."""
+        table = self.query_one("#goals-table", GoalsDataTable)
+        selected_key = self._get_selected_row_key(table)
+        table.clear()
+
+        # Update panel title
+        panel = self.query_one("#goals", Panel)
+        title_widget = panel.query_one(".panel-title", Static)
+
+        if self._goals_showing_review:
+            title_widget.update("Weekly Goals (Last Week Review)")
+            if not self._goals:
+                table.add_row(
+                    "", "", Text("No goals from last week", style="dim italic")
+                )
+            else:
+                for goal in self._goals:
+                    checkbox = "[x]" if goal.is_completed else "[ ]"
+                    content = (
+                        goal.content[:60] + "…"
+                        if len(goal.content) > 60
+                        else goal.content
+                    )
+                    table.add_row(
+                        "",
+                        checkbox,
+                        content,
+                        key=f"goal:{goal.id}",
+                    )
+                # Add prompt to create new goals
+                table.add_row(
+                    "",
+                    "",
+                    Text("Press 'a' to add goals for this week", style="dim italic"),
+                    key="goal:prompt",
+                )
+        else:
+            title_widget.update("Weekly Goals")
+            incomplete_goals = [g for g in self._goals if not g.is_completed]
+            if not self._goals:
+                table.add_row(
+                    "",
+                    "",
+                    Text("No goals yet - press 'a' to add", style="dim italic"),
+                )
+            elif not incomplete_goals:
+                # All goals complete!
+                table.add_row(
+                    "",
+                    "",
+                    Text("All goals complete! Good job!", style="bold green"),
+                )
+            else:
+                for goal in incomplete_goals:
+                    content = (
+                        goal.content[:60] + "…"
+                        if len(goal.content) > 60
+                        else goal.content
+                    )
+                    table.add_row(
+                        "",
+                        "[ ]",
+                        content,
+                        key=f"goal:{goal.id}",
+                    )
+
+        if selected_key:
+            self._restore_cursor_by_key(table, selected_key)
+        table.refresh_line_numbers()
 
     @work(exclusive=False)
     async def _refresh_my_prs(self) -> None:
@@ -860,7 +984,8 @@ class StatusDashboard(App):
         | TodoistMoveAction
         | LinearSetStateAction
         | LinearAssignAction
-        | LinearMoveAction,
+        | LinearMoveAction
+        | GoalCompleteAction,
     ) -> None:
         """Execute the undo operation for a given action."""
         success = False
@@ -907,6 +1032,11 @@ class StatusDashboard(App):
             )
             if success:
                 self._refresh_linear()
+
+        elif isinstance(action, GoalCompleteAction):
+            success = goals_db.uncomplete_goal(action.goal_id)
+            if success:
+                self._refresh_goals()
 
         if success:
             self.notify(f"Undid: {action.description}")
@@ -1808,6 +1938,83 @@ class StatusDashboard(App):
         else:
             self.notify("Failed to save issue order", severity="error")
             self._refresh_linear()
+
+    def action_create_goal(self) -> None:
+        """Show modal to create a new weekly goal."""
+        focused = self.focused
+        if not isinstance(focused, DataTable) or focused.id != "goals-table":
+            self.notify("Focus on goals panel first", severity="warning")
+            return
+
+        self.push_screen(CreateGoalModal(), self._handle_goal_created)
+
+    def _handle_goal_created(self, result: dict[str, str] | None) -> None:
+        """Handle the result from the goal creation modal."""
+        if result:
+            content = result["content"]
+            today = date.today()
+            week_start = goals_db.get_week_start(today)
+            goals_db.create_goal(content, week_start)
+            self.notify("Goal added!")
+            self._refresh_goals()
+
+    def action_complete_goal(self) -> None:
+        """Mark the selected goal as complete."""
+        focused = self.focused
+        if not isinstance(focused, DataTable) or focused.id != "goals-table":
+            self.notify("Select a goal first", severity="warning")
+            return
+
+        if focused.cursor_row is None or focused.row_count == 0:
+            return
+
+        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
+        if not cell_key.row_key or not cell_key.row_key.value:
+            return
+
+        key = str(cell_key.row_key.value)
+        if not key.startswith("goal:") or key == "goal:prompt":
+            return
+
+        goal_id = key.split(":", 1)[1]
+        goal = next((g for g in self._goals if g.id == goal_id), None)
+        if not goal:
+            return
+
+        if goals_db.complete_goal(goal_id):
+            description = f"Complete: {goal.content[:30]}"
+            self._undo_stack.push(
+                GoalCompleteAction(goal_id=goal_id, description=description)
+            )
+            self.notify("Goal completed!")
+            self._refresh_goals()
+        else:
+            self.notify("Failed to complete goal", severity="error")
+
+    def action_delete_goal(self) -> None:
+        """Delete the selected goal."""
+        focused = self.focused
+        if not isinstance(focused, DataTable) or focused.id != "goals-table":
+            self.notify("Select a goal first", severity="warning")
+            return
+
+        if focused.cursor_row is None or focused.row_count == 0:
+            return
+
+        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
+        if not cell_key.row_key or not cell_key.row_key.value:
+            return
+
+        key = str(cell_key.row_key.value)
+        if not key.startswith("goal:") or key == "goal:prompt":
+            return
+
+        goal_id = key.split(":", 1)[1]
+        if goals_db.delete_goal(goal_id):
+            self.notify("Goal deleted")
+            self._refresh_goals()
+        else:
+            self.notify("Failed to delete goal", severity="error")
 
 
 def main():

@@ -16,7 +16,8 @@ A terminal dashboard for tracking PRs, Todoist tasks, and Linear issues.
    | `TODOIST_API_TOKEN` | Yes | Your Todoist API token |
    | `LINEAR_API_KEY` | Yes | Your Linear API key |
    | `LINEAR_PROJECT` | Yes | Name of the Linear project to show issues from |
-   | `GITHUB_ORG` | No | GitHub organization (defaults to `METR`) |
+   | `GITHUB_ORGS` | No | Comma-separated list of GitHub organizations (e.g., `METR,metr-middleman`) |
+   | `GITHUB_ORG` | No | Single GitHub organization (deprecated, use `GITHUB_ORGS` instead) |
    | `HIDDEN_REVIEW_REQUESTS` | No | JSON array of `[repo, pr_number]` pairs to hide from review requests |
 
 3. Install dependencies and run:

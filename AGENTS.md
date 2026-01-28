@@ -42,7 +42,8 @@ Required in `.env` file (see `.env.example`):
 - `LINEAR_PROJECT`
 
 Optional:
-- `GITHUB_ORG` (defaults to `METR`)
+- `GITHUB_ORGS` (comma-separated list, e.g., `METR,metr-middleman`)
+- `GITHUB_ORG` (single org, deprecated; defaults to `METR`)
 - `HIDDEN_REVIEW_REQUESTS` (JSON array)
 
 ## Logging

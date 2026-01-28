@@ -36,7 +36,8 @@ Environment variables (`.env` or `$XDG_CONFIG_HOME/status-dashboard/.env`):
 - `TODOIST_API_TOKEN` - Required
 - `LINEAR_API_KEY` - Required
 - `LINEAR_PROJECT` - Required (project name to display)
-- `GITHUB_ORG` - Optional (defaults to METR)
+- `GITHUB_ORGS` - Optional comma-separated list of GitHub organizations (e.g., `METR,metr-middleman`)
+- `GITHUB_ORG` - Optional single organization (deprecated, use `GITHUB_ORGS`; defaults to METR)
 - `HIDDEN_REVIEW_REQUESTS` - Optional JSON array of [repo, pr_number]
 
 Logs: `$XDG_STATE_HOME/status-dashboard/status-dashboard.log` (rotating, 1MB, 3 backups)

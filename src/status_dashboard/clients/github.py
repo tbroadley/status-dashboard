@@ -187,67 +187,78 @@ query {{
 """
 
 
-def get_my_prs(org: str | None = None) -> list[PullRequest]:
+def _get_orgs() -> list[str]:
+    """Get list of GitHub organizations from environment."""
+    orgs_str = os.environ.get("GITHUB_ORGS", "")
+    if orgs_str:
+        return [org.strip() for org in orgs_str.split(",") if org.strip()]
+    # Fall back to single GITHUB_ORG for backward compatibility
+    return [os.environ.get("GITHUB_ORG", "METR")]
+
+
+def get_my_prs(orgs: list[str] | None = None) -> list[PullRequest]:
     """Get open PRs created by the current user with review status."""
-    owner = org or os.environ.get("GITHUB_ORG", "METR")
-    query = MY_PRS_QUERY.format(org=owner)
-    result = _run_gh_graphql(query)
+    owners = orgs or _get_orgs()
+    all_prs: list[PullRequest] = []
 
-    if not result:
-        return []
+    for owner in owners:
+        query = MY_PRS_QUERY.format(org=owner)
+        result = _run_gh_graphql(query)
 
-    prs = []
-    nodes = result.get("data", {}).get("search", {}).get("nodes", [])
-
-    for pr in nodes:
-        if not pr:  # Can be null for non-PR results
+        if not result:
             continue
 
-        reviews = pr.get("latestReviews", {}).get("nodes", [])
+        nodes = result.get("data", {}).get("search", {}).get("nodes", [])
 
-        # Filter out bot reviews
-        human_reviews = [
-            r
-            for r in reviews
-            if r.get("author", {}).get("login", "").lower() not in BOT_REVIEWERS
-        ]
+        for pr in nodes:
+            if not pr:  # Can be null for non-PR results
+                continue
 
-        # Check review states
-        review_decision = pr.get("reviewDecision")
-        is_approved = review_decision == "APPROVED"
-        has_changes_requested = any(
-            r.get("state") == "CHANGES_REQUESTED" for r in human_reviews
-        )
-        has_comments = any(r.get("state") == "COMMENTED" for r in human_reviews)
+            reviews = pr.get("latestReviews", {}).get("nodes", [])
 
-        commits = pr.get("commits", {}).get("nodes", [])
-        ci_state = None
-        if commits:
-            rollup = commits[0].get("commit", {}).get("statusCheckRollup")
-            if rollup:
-                ci_state = rollup.get("state")
+            # Filter out bot reviews
+            human_reviews = [
+                r
+                for r in reviews
+                if r.get("author", {}).get("login", "").lower() not in BOT_REVIEWERS
+            ]
 
-        review_threads = pr.get("reviewThreads", {}).get("nodes", [])
-        unresolved_count = sum(
-            1 for thread in review_threads if not thread.get("isResolved", True)
-        )
-
-        prs.append(
-            PullRequest(
-                number=pr["number"],
-                title=pr["title"],
-                repository=pr.get("repository", {}).get("nameWithOwner", "unknown"),
-                url=pr["url"],
-                is_draft=pr.get("isDraft", False),
-                is_approved=is_approved,
-                needs_response=has_changes_requested or has_comments,
-                has_review=len(human_reviews) > 0,
-                ci_status=ci_state,
-                unresolved_comment_count=unresolved_count,
+            # Check review states
+            review_decision = pr.get("reviewDecision")
+            is_approved = review_decision == "APPROVED"
+            has_changes_requested = any(
+                r.get("state") == "CHANGES_REQUESTED" for r in human_reviews
             )
-        )
+            has_comments = any(r.get("state") == "COMMENTED" for r in human_reviews)
 
-    return prs
+            commits = pr.get("commits", {}).get("nodes", [])
+            ci_state = None
+            if commits:
+                rollup = commits[0].get("commit", {}).get("statusCheckRollup")
+                if rollup:
+                    ci_state = rollup.get("state")
+
+            review_threads = pr.get("reviewThreads", {}).get("nodes", [])
+            unresolved_count = sum(
+                1 for thread in review_threads if not thread.get("isResolved", True)
+            )
+
+            all_prs.append(
+                PullRequest(
+                    number=pr["number"],
+                    title=pr["title"],
+                    repository=pr.get("repository", {}).get("nameWithOwner", "unknown"),
+                    url=pr["url"],
+                    is_draft=pr.get("isDraft", False),
+                    is_approved=is_approved,
+                    needs_response=has_changes_requested or has_comments,
+                    has_review=len(human_reviews) > 0,
+                    ci_status=ci_state,
+                    unresolved_comment_count=unresolved_count,
+                )
+            )
+
+    return all_prs
 
 
 def remove_self_as_reviewer(repo: str, pr_number: int) -> bool:
@@ -317,53 +328,55 @@ def squash_merge_pr(repo: str, pr_number: int) -> bool:
         return False
 
 
-def get_review_requests(org: str | None = None) -> list[ReviewRequest]:
+def get_review_requests(orgs: list[str] | None = None) -> list[ReviewRequest]:
     """Get open PRs where review is requested from current user."""
-    owner = org or os.environ.get("GITHUB_ORG", "METR")
-    query = REVIEW_REQUESTS_QUERY.format(org=owner)
-    result = _run_gh_graphql(query)
+    owners = orgs or _get_orgs()
+    all_prs: list[ReviewRequest] = []
 
-    if not result:
-        return []
+    for owner in owners:
+        query = REVIEW_REQUESTS_QUERY.format(org=owner)
+        result = _run_gh_graphql(query)
 
-    prs = []
-    nodes = result.get("data", {}).get("search", {}).get("nodes", [])
-
-    for pr in nodes:
-        if not pr:
+        if not result:
             continue
 
-        # Extract requested teams from reviewRequests
-        requested_teams: list[str] = []
-        review_requests = pr.get("reviewRequests", {}).get("nodes", [])
-        for req in review_requests:
-            reviewer = req.get("requestedReviewer", {})
-            if reviewer and "slug" in reviewer:
-                requested_teams.append(reviewer["slug"])
+        nodes = result.get("data", {}).get("search", {}).get("nodes", [])
 
-        # Check if someone else has already submitted a review
-        reviews = pr.get("latestReviews", {}).get("nodes", [])
-        human_reviews = [
-            r
-            for r in reviews
-            if r.get("author", {}).get("login", "").lower() not in BOT_REVIEWERS
-        ]
-        has_other_review = len(human_reviews) > 0
+        for pr in nodes:
+            if not pr:
+                continue
 
-        prs.append(
-            ReviewRequest(
-                number=pr["number"],
-                title=pr["title"],
-                repository=pr.get("repository", {}).get("nameWithOwner", "unknown"),
-                url=pr["url"],
-                author=pr.get("author", {}).get("login", "unknown"),
-                created_at=_parse_datetime(pr["createdAt"]),
-                requested_teams=requested_teams,
-                has_other_review=has_other_review,
+            # Extract requested teams from reviewRequests
+            requested_teams: list[str] = []
+            review_requests = pr.get("reviewRequests", {}).get("nodes", [])
+            for req in review_requests:
+                reviewer = req.get("requestedReviewer", {})
+                if reviewer and "slug" in reviewer:
+                    requested_teams.append(reviewer["slug"])
+
+            # Check if someone else has already submitted a review
+            reviews = pr.get("latestReviews", {}).get("nodes", [])
+            human_reviews = [
+                r
+                for r in reviews
+                if r.get("author", {}).get("login", "").lower() not in BOT_REVIEWERS
+            ]
+            has_other_review = len(human_reviews) > 0
+
+            all_prs.append(
+                ReviewRequest(
+                    number=pr["number"],
+                    title=pr["title"],
+                    repository=pr.get("repository", {}).get("nameWithOwner", "unknown"),
+                    url=pr["url"],
+                    author=pr.get("author", {}).get("login", "unknown"),
+                    created_at=_parse_datetime(pr["createdAt"]),
+                    requested_teams=requested_teams,
+                    has_other_review=has_other_review,
+                )
             )
-        )
 
-    return prs
+    return all_prs
 
 
 def _run_gh_api(endpoint: str, method: str = "GET") -> Any:
@@ -393,12 +406,12 @@ def _run_gh_api(endpoint: str, method: str = "GET") -> Any:
         return None
 
 
-def get_notifications(org: str | None = None) -> list[Notification]:
+def get_notifications(orgs: list[str] | None = None) -> list[Notification]:
     """Get unread GitHub notifications for pull requests.
 
     Filters to only PR-related notifications and optionally by organization.
     """
-    owner = org or os.environ.get("GITHUB_ORG", "METR")
+    owners = orgs or _get_orgs()
     result = _run_gh_api("notifications?all=false&per_page=50")
 
     if not result or not isinstance(result, list):
@@ -414,7 +427,9 @@ def get_notifications(org: str | None = None) -> list[Notification]:
             continue
 
         repo_full_name = item.get("repository", {}).get("full_name", "")
-        if owner and not repo_full_name.startswith(f"{owner}/"):
+        if owners and not any(
+            repo_full_name.startswith(f"{owner}/") for owner in owners
+        ):
             continue
 
         subject_url = subject.get("url", "")

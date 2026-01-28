@@ -579,6 +579,7 @@ class StatusDashboard(App):
         self._todoist_optimistic_tasks: dict[str, todoist.Task] = {}
         self._linear_issues: list[linear.Issue] = []
         self._linear_debounce_handle: object | None = None
+        self._notifications: list[github.Notification] = []
         self._goals: list[goals_db.Goal] = []
         self._goals_showing_review: bool = False
 
@@ -828,18 +829,22 @@ class StatusDashboard(App):
 
     @work(exclusive=False)
     async def _refresh_gh_notifications(self) -> None:
-        table = self.query_one("#notifications-table", NotificationsDataTable)
-        selected_key = self._get_selected_row_key(table)
-
         notifications = await asyncio.to_thread(github.get_notifications)
+        self._notifications = notifications or []
+        self._render_notifications_table()
+
+    def _render_notifications_table(self, preserve_cursor: bool = True) -> None:
+        table = self.query_one("#notifications-table", NotificationsDataTable)
+        selected_key = self._get_selected_row_key(table) if preserve_cursor else None
+
         table.clear()
 
-        if not notifications:
+        if not self._notifications:
             table.add_row(
                 "", "", Text("No notifications", style="dim italic"), "", "", ""
             )
         else:
-            for notif in notifications:
+            for notif in self._notifications:
                 repo = _short_repo(notif.repository)
                 age = github._relative_time(notif.updated_at)
                 pr_display = f"#{notif.pr_number}" if notif.pr_number else ""
@@ -854,7 +859,8 @@ class StatusDashboard(App):
                     key=f"notif:{notif.id}:{notif.repository}:{notif.pr_number or ''}:{notif.url}",
                 )
 
-            self._restore_cursor_by_key(table, selected_key)
+            if selected_key:
+                self._restore_cursor_by_key(table, selected_key)
         table.refresh_line_numbers()
 
     def _get_selected_row_key(self, table: DataTable) -> str | None:
@@ -1807,17 +1813,52 @@ class StatusDashboard(App):
 
         # Key format: "notif:{thread_id}:{repo}:{pr_number}:{url}"
         parts = key.split(":", 4)
-        if len(parts) >= 2:
-            thread_id = parts[1]
-            self._do_mark_notification_read(thread_id)
+        if len(parts) < 2:
+            return
+
+        thread_id = parts[1]
+        cursor_row = focused.cursor_row
+
+        # Optimistic update: find and remove notification from list
+        removed_notification = None
+        removed_index = None
+        for idx, notif in enumerate(self._notifications):
+            if notif.id == thread_id:
+                removed_notification = notif
+                removed_index = idx
+                break
+
+        if removed_notification is None:
+            return
+
+        # Remove from list and re-render
+        self._notifications.pop(removed_index)
+        self._render_notifications_table(preserve_cursor=False)
+
+        # Position cursor appropriately after removal
+        table = self.query_one("#notifications-table", NotificationsDataTable)
+        if table.row_count > 0:
+            new_row = min(cursor_row, table.row_count - 1)
+            table.move_cursor(row=new_row)
+        table.refresh_line_numbers()
+
+        # Make API call in background
+        self._do_mark_notification_read(thread_id, removed_notification, removed_index)
 
     @work(exclusive=False)
-    async def _do_mark_notification_read(self, thread_id: str) -> None:
+    async def _do_mark_notification_read(
+        self,
+        thread_id: str,
+        removed_notification: github.Notification,
+        removed_index: int,
+    ) -> None:
         success = await asyncio.to_thread(github.mark_notification_read, thread_id)
         if success:
             self.notify("Notification marked as read")
-            self._refresh_gh_notifications()
         else:
+            # Restore notification on failure
+            self._notifications.insert(removed_index, removed_notification)
+            self._render_notifications_table()
             self.notify("Failed to mark notification as read", severity="error")
 
     def action_create_todoist_task(self) -> None:

@@ -40,6 +40,8 @@ class ReviewRequest:
     url: str
     author: str
     created_at: datetime
+    requested_teams: list[str]
+    has_other_review: bool  # True if someone else has already submitted a review
 
 
 @dataclass
@@ -158,6 +160,26 @@ query {{
           login
         }}
         createdAt
+        reviewRequests(first: 20) {{
+          nodes {{
+            requestedReviewer {{
+              ... on Team {{
+                slug
+              }}
+              ... on User {{
+                login
+              }}
+            }}
+          }}
+        }}
+        latestReviews(first: 20) {{
+          nodes {{
+            author {{
+              login
+            }}
+            state
+          }}
+        }}
       }}
     }}
   }}
@@ -311,6 +333,23 @@ def get_review_requests(org: str | None = None) -> list[ReviewRequest]:
         if not pr:
             continue
 
+        # Extract requested teams from reviewRequests
+        requested_teams: list[str] = []
+        review_requests = pr.get("reviewRequests", {}).get("nodes", [])
+        for req in review_requests:
+            reviewer = req.get("requestedReviewer", {})
+            if reviewer and "slug" in reviewer:
+                requested_teams.append(reviewer["slug"])
+
+        # Check if someone else has already submitted a review
+        reviews = pr.get("latestReviews", {}).get("nodes", [])
+        human_reviews = [
+            r
+            for r in reviews
+            if r.get("author", {}).get("login", "").lower() not in BOT_REVIEWERS
+        ]
+        has_other_review = len(human_reviews) > 0
+
         prs.append(
             ReviewRequest(
                 number=pr["number"],
@@ -319,6 +358,8 @@ def get_review_requests(org: str | None = None) -> list[ReviewRequest]:
                 url=pr["url"],
                 author=pr.get("author", {}).get("login", "unknown"),
                 created_at=_parse_datetime(pr["createdAt"]),
+                requested_teams=requested_teams,
+                has_other_review=has_other_review,
             )
         )
 

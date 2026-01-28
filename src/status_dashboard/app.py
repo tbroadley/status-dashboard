@@ -77,6 +77,19 @@ LINEAR_STATE_SHORT = {
 }
 
 
+def _load_blocked_review_teams() -> set[str]:
+    """Load blocked teams from BLOCKED_REVIEW_TEAMS env var (JSON array of team slugs)."""
+    raw = os.environ.get("BLOCKED_REVIEW_TEAMS", "[]")
+    try:
+        teams: list[str] = json.loads(raw)
+        return {str(team) for team in teams}
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return set()
+
+
+BLOCKED_REVIEW_TEAMS = _load_blocked_review_teams()
+
+
 def _setup_logging() -> None:
     """Configure logging to stderr and a rotating log file."""
     xdg_state = os.environ.get("XDG_STATE_HOME")
@@ -100,6 +113,10 @@ def _setup_logging() -> None:
     )
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
+
+    # Silence noisy third-party libraries
+    for name in ("httpx", "httpcore", "hpack"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 _setup_logging()
@@ -234,11 +251,19 @@ class VimDataTable(DataTable):
     def key_j(self) -> None:
         count = self._get_and_reset_count()
         for _ in range(count):
+            # If at bottom row, move to next panel
+            if self.cursor_row is not None and self.cursor_row >= self.row_count - 1:
+                self.app.action_focus_next()
+                return
             self.action_cursor_down()
 
     def key_k(self) -> None:
         count = self._get_and_reset_count()
         for _ in range(count):
+            # If at top row, move to previous panel
+            if self.cursor_row is not None and self.cursor_row <= 0:
+                self.app.action_focus_previous()
+                return
             self.action_cursor_up()
 
     def key_0(self) -> None:
@@ -340,10 +365,10 @@ class TodoistDataTable(VimDataTable):
         Binding("n", "app.defer_task", "Defer"),
         Binding("d", "app.delete_task", "Delete"),
         Binding("o", "app.open_task_link", "Open Link"),
-        Binding("J", "app.move_task_down", "Move Down", show=False),
-        Binding("K", "app.move_task_up", "Move Up", show=False),
-        Binding("shift+down", "app.move_task_down", "Move Down"),
-        Binding("shift+up", "app.move_task_up", "Move Up"),
+        Binding("J", "app.move_task_down", "Move Down"),
+        Binding("K", "app.move_task_up", "Move Up"),
+        Binding("shift+down", "app.move_task_down", "Move Down", show=False),
+        Binding("shift+up", "app.move_task_up", "Move Up", show=False),
         Binding("h", "app.todoist_previous_day", "Prev Day"),
         Binding("l", "app.todoist_next_day", "Next Day"),
         Binding("left", "app.todoist_previous_day", "Prev Day", show=False),
@@ -431,11 +456,11 @@ class Panel(Container):
 
 
 def _short_repo(repo: str) -> str:
-    """Shorten 'METR/some-repo' to 'METR/some-'."""
+    """Shorten 'METR/some-repo' to 'METR/some-repo' (truncated)."""
     parts = repo.split("/")
     if len(parts) == 2:
-        org = parts[0][:5]
-        name = parts[1][:5]
+        org = parts[0][:6]
+        name = parts[1][:12]
         return f"{org}/{name}"
     return repo[:11]
 
@@ -568,7 +593,7 @@ class StatusDashboard(App):
         self._setup_table(my_prs)
 
         reviews = self.query_one("#review-requests-table", DataTable)
-        reviews.add_columns("#", "PR", "Title", "Repo", "Author", "Age")
+        reviews.add_columns("#", "PR", "Title", "Repo", "Author", "Age", "Reviewed")
         self._setup_table(reviews)
 
         notifs = self.query_one("#notifications-table", DataTable)
@@ -765,19 +790,28 @@ class StatusDashboard(App):
         prs = await asyncio.to_thread(github.get_review_requests)
         table.clear()
 
-        visible_prs = [
-            pr for pr in prs if (pr.repository, pr.number) not in HIDDEN_REVIEW_REQUESTS
-        ]
+        def _is_visible(pr: github.ReviewRequest) -> bool:
+            if (pr.repository, pr.number) in HIDDEN_REVIEW_REQUESTS:
+                return False
+            # Hide if all requested teams are blocked (and there are teams)
+            if pr.requested_teams and all(
+                team in BLOCKED_REVIEW_TEAMS for team in pr.requested_teams
+            ):
+                return False
+            return True
+
+        visible_prs = [pr for pr in prs if _is_visible(pr)]
 
         if not visible_prs:
             table.add_row(
-                "", "", Text("No review requests", style="dim italic"), "", "", ""
+                "", "", Text("No review requests", style="dim italic"), "", "", "", ""
             )
         else:
             for pr in visible_prs:
                 repo = _short_repo(pr.repository)
                 age = github._relative_time(pr.created_at)
                 title = pr.title[:40] + "…" if len(pr.title) > 40 else pr.title
+                reviewed = "✓" if pr.has_other_review else ""
                 table.add_row(
                     "",
                     f"#{pr.number}",
@@ -785,6 +819,7 @@ class StatusDashboard(App):
                     repo,
                     f"@{pr.author}",
                     age,
+                    reviewed,
                     key=f"review:{pr.repository}:{pr.number}:{pr.url}",
                 )
 

@@ -582,7 +582,7 @@ class StatusDashboard(App):
         self._todoist_optimistic_tasks: dict[str, todoist.Task] = {}
         self._linear_issues: list[linear.Issue] = []
         self._linear_debounce_handle: object | None = None
-        self._notifications: list[github.Notification] = []
+        self._gh_notifications: list[github.Notification] = []
         self._goals: list[goals_db.Goal] = []
         self._goals_showing_review: bool = False
 
@@ -833,7 +833,7 @@ class StatusDashboard(App):
     @work(exclusive=False)
     async def _refresh_gh_notifications(self) -> None:
         notifications = await asyncio.to_thread(github.get_notifications)
-        self._notifications = notifications or []
+        self._gh_notifications = notifications or []
         self._render_notifications_table()
 
     def _render_notifications_table(self, preserve_cursor: bool = True) -> None:
@@ -842,12 +842,12 @@ class StatusDashboard(App):
 
         table.clear()
 
-        if not self._notifications:
+        if not self._gh_notifications:
             table.add_row(
                 "", "", Text("No notifications", style="dim italic"), "", "", ""
             )
         else:
-            for notif in self._notifications:
+            for notif in self._gh_notifications:
                 repo = _short_repo(notif.repository)
                 age = github._relative_time(notif.updated_at)
                 pr_display = f"#{notif.pr_number}" if notif.pr_number else ""
@@ -1831,7 +1831,7 @@ class StatusDashboard(App):
         # Optimistic update: find and remove notification from list
         removed_notification = None
         removed_index = None
-        for idx, notif in enumerate(self._notifications):
+        for idx, notif in enumerate(self._gh_notifications):
             if notif.id == thread_id:
                 removed_notification = notif
                 removed_index = idx
@@ -1841,7 +1841,7 @@ class StatusDashboard(App):
             return
 
         # Remove from list and re-render
-        self._notifications.pop(removed_index)
+        self._gh_notifications.pop(removed_index)
         self._render_notifications_table(preserve_cursor=False)
 
         # Position cursor appropriately after removal
@@ -1866,7 +1866,7 @@ class StatusDashboard(App):
             self.notify("Notification marked as read")
         else:
             # Restore notification on failure
-            self._notifications.insert(removed_index, removed_notification)
+            self._gh_notifications.insert(removed_index, removed_notification)
             self._render_notifications_table()
             self.notify("Failed to mark notification as read", severity="error")
 

@@ -427,7 +427,8 @@ def get_projects(api_token: str | None = None) -> list[Project]:
         )
         response.raise_for_status()
         data = response.json()
-        return [Project(id=p["id"], name=p["name"]) for p in data]
+        projects = data.get("results", data) if isinstance(data, dict) else data
+        return [Project(id=p["id"], name=p["name"]) for p in projects]
     except httpx.HTTPStatusError as e:
         logger.error("Failed to get projects: %s", e.response.status_code)
         return []

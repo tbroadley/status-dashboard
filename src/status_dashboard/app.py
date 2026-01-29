@@ -40,6 +40,7 @@ from status_dashboard.widgets.create_modals import (
     CreateGoalModal,
     CreateLinearIssueModal,
     CreateTodoistTaskModal,
+    EditTodoistTaskModal,
 )
 
 
@@ -361,10 +362,12 @@ class TodoistDataTable(VimDataTable):
     BINDINGS = [
         Binding("T", "app.reschedule_overdue_to_today", "Reschedule All"),
         Binding("a", "app.create_todoist_task", "Add Task"),
+        Binding("e", "app.edit_todoist_task", "Edit"),
         Binding("c", "app.complete_task", "Complete"),
         Binding("n", "app.defer_task", "Defer"),
         Binding("d", "app.delete_task", "Delete"),
         Binding("o", "app.open_task_link", "Open Link"),
+        Binding("ctrl+enter", "app.open_todoist_in_browser", "Open in Browser"),
         Binding("J", "app.move_task_down", "Move Down"),
         Binding("K", "app.move_task_up", "Move Up"),
         Binding("shift+down", "app.move_task_down", "Move Down", show=False),
@@ -1175,14 +1178,20 @@ class StatusDashboard(App):
             self.notify(f"Failed to undo: {action.description}", severity="error")
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        """Handle Enter key on a row - open in browser."""
+        """Handle Enter key on a row - open edit modal for Todoist, browser for others."""
         key = str(event.row_key.value) if event.row_key.value else ""
 
-        # Extract URL from key format
+        # For Todoist tasks, Enter opens the edit modal instead of browser
         if key.startswith("todoist:"):
             # Format: "todoist:{task_id}:{url}"
-            url = key.split(":", 2)[2]
-        elif key.startswith("linear:"):
+            parts = key.split(":", 2)
+            if len(parts) >= 2:
+                task_id = parts[1]
+                self._prepare_edit_todoist_task(task_id)
+            return
+
+        # Extract URL from key format for other types
+        if key.startswith("linear:"):
             # Format: "linear:{issue_id}:{team_id}:{url}"
             url = key.split(":", 3)[3]
         elif key.startswith("review:"):
@@ -1980,6 +1989,119 @@ class StatusDashboard(App):
         if was_selected and updated_task:
             self._todoist_restore_key = f"todoist:{new_task_id}:{updated_task.url}"
         self._render_todoist_table()
+
+    def action_edit_todoist_task(self) -> None:
+        """Show modal to edit the selected Todoist task."""
+        focused = self.focused
+        if not isinstance(focused, DataTable) or focused.id != "todoist-table":
+            self.notify("Select a Todoist task first", severity="warning")
+            return
+
+        if focused.cursor_row is None or focused.row_count == 0:
+            return
+
+        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
+        if not cell_key.row_key or not cell_key.row_key.value:
+            return
+
+        key = str(cell_key.row_key.value)
+        if not key.startswith("todoist:"):
+            return
+
+        parts = key.split(":", 2)
+        if len(parts) >= 2:
+            task_id = parts[1]
+            self._prepare_edit_todoist_task(task_id)
+
+    @work(exclusive=False)
+    async def _prepare_edit_todoist_task(self, task_id: str) -> None:
+        """Load task data and projects, then show edit modal."""
+        task_data = await asyncio.to_thread(todoist.get_task, task_id)
+        if not task_data:
+            self.notify("Failed to load task", severity="error")
+            return
+
+        projects = await asyncio.to_thread(todoist.get_projects)
+
+        content = task_data.get("content", "")
+        description = task_data.get("description", "")
+        project_id = task_data.get("project_id")
+        due = task_data.get("due")
+        due_string = due.get("string", "") if due else ""
+
+        project_options = [(p.name, p.id) for p in projects]
+
+        self.push_screen(
+            EditTodoistTaskModal(
+                task_id=task_id,
+                content=content,
+                description=description,
+                project_id=project_id,
+                due_string=due_string,
+                projects=project_options,
+            ),
+            self._handle_todoist_task_edited,
+        )
+
+    def _handle_todoist_task_edited(self, result: dict[str, str] | None) -> None:
+        """Handle the result from the Todoist task edit modal."""
+        if result and len(result) > 1:
+            task_id = result["task_id"]
+            content = result.get("content")
+            description = result.get("description")
+            project_id = result.get("project_id")
+            due_string = result.get("due_string")
+            self._do_update_todoist_task(
+                task_id, content, description, project_id, due_string
+            )
+
+    @work(exclusive=False)
+    async def _do_update_todoist_task(
+        self,
+        task_id: str,
+        content: str | None,
+        description: str | None,
+        project_id: str | None,
+        due_string: str | None,
+    ) -> None:
+        success = await asyncio.to_thread(
+            todoist.update_task,
+            task_id,
+            content=content,
+            description=description,
+            project_id=project_id,
+            due_string=due_string,
+        )
+        if success:
+            self.notify("Task updated!")
+            self._refresh_todoist()
+        else:
+            self.notify("Failed to update task", severity="error")
+
+    def action_open_todoist_in_browser(self) -> None:
+        """Open the selected Todoist task in the web app."""
+        focused = self.focused
+        if not isinstance(focused, DataTable) or focused.id != "todoist-table":
+            self.notify("Select a Todoist task first", severity="warning")
+            return
+
+        if focused.cursor_row is None or focused.row_count == 0:
+            return
+
+        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
+        if not cell_key.row_key or not cell_key.row_key.value:
+            return
+
+        key = str(cell_key.row_key.value)
+        if not key.startswith("todoist:"):
+            return
+
+        # Format: "todoist:{task_id}:{url}"
+        parts = key.split(":", 2)
+        if len(parts) >= 3:
+            url = parts[2]
+            if url:
+                webbrowser.open(url)
 
     def action_create_linear_issue(self) -> None:
         """Show modal to create a new Linear issue."""

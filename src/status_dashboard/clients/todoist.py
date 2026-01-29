@@ -404,3 +404,80 @@ def update_day_orders(
     except httpx.RequestError as e:
         logger.error("Failed to update day orders: %s", e)
         return False
+
+
+@dataclass
+class Project:
+    id: str
+    name: str
+
+
+def get_projects(api_token: str | None = None) -> list[Project]:
+    """Get all Todoist projects. Returns empty list on error."""
+    token = api_token or _get_token()
+    if not token:
+        logger.error("TODOIST_API_TOKEN not set")
+        return []
+
+    try:
+        response = httpx.get(
+            "https://api.todoist.com/api/v1/projects",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return [Project(id=p["id"], name=p["name"]) for p in data]
+    except httpx.HTTPStatusError as e:
+        logger.error("Failed to get projects: %s", e.response.status_code)
+        return []
+    except httpx.RequestError as e:
+        logger.error("Failed to get projects: %s", e)
+        return []
+
+
+def update_task(
+    task_id: str,
+    content: str | None = None,
+    description: str | None = None,
+    project_id: str | None = None,
+    due_string: str | None = None,
+    api_token: str | None = None,
+) -> bool:
+    """Update a Todoist task. Only provided fields will be updated. Returns True on success."""
+    token = api_token or _get_token()
+    if not token:
+        logger.error("TODOIST_API_TOKEN not set")
+        return False
+
+    payload: dict[str, Any] = {}
+    if content is not None:
+        payload["content"] = content
+    if description is not None:
+        payload["description"] = description
+    if project_id is not None:
+        payload["project_id"] = project_id
+    if due_string is not None:
+        payload["due_string"] = due_string
+
+    if not payload:
+        return True
+
+    try:
+        response = httpx.post(
+            f"https://api.todoist.com/api/v1/tasks/{task_id}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=10,
+        )
+        response.raise_for_status()
+        return True
+    except httpx.HTTPStatusError as e:
+        logger.error("Failed to update task: %s", e.response.status_code)
+        return False
+    except httpx.RequestError as e:
+        logger.error("Failed to update task: %s", e)
+        return False

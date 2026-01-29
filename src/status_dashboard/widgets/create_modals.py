@@ -5,7 +5,7 @@ from typing import Any
 from textual.app import ComposeResult
 from textual.containers import Container, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Select
+from textual.widgets import Button, Input, Label, Select, TextArea
 
 
 class CreateTodoistTaskModal(ModalScreen):
@@ -221,6 +221,151 @@ class CreateLinearIssueModal(ModalScreen):
             # Simulate create button press
             create_btn = self.query_one("#create-btn", Button)
             self.on_button_pressed(Button.Pressed(create_btn))
+
+
+class EditTodoistTaskModal(ModalScreen[dict[str, str] | None]):
+    """Modal for editing an existing Todoist task."""
+
+    BINDINGS = [("escape", "dismiss_modal", "Close")]
+
+    def action_dismiss_modal(self) -> None:
+        self.dismiss(None)
+
+    CSS = """
+    EditTodoistTaskModal {
+        align: center middle;
+    }
+
+    #dialog {
+        background: $surface;
+        border: thick $primary;
+        width: 70;
+        height: auto;
+        padding: 1 2;
+    }
+
+    #dialog Label {
+        margin-top: 1;
+    }
+
+    #dialog Input {
+        margin-bottom: 1;
+    }
+
+    #dialog TextArea {
+        margin-bottom: 1;
+        height: 4;
+    }
+
+    #dialog Select {
+        margin-bottom: 1;
+    }
+
+    #buttons {
+        layout: horizontal;
+        align: center middle;
+        height: auto;
+        margin-top: 1;
+    }
+
+    #buttons Button {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(
+        self,
+        task_id: str,
+        content: str,
+        description: str,
+        project_id: str | None,
+        due_string: str | None,
+        projects: list[tuple[str, str]],
+        *args: Any,
+        **kwargs: Any,
+    ):
+        super().__init__(*args, **kwargs)
+        self.task_id = task_id
+        self.initial_content = content
+        self.initial_description = description
+        self.initial_project_id = project_id
+        self.initial_due_string = due_string
+        self.projects = projects
+
+    def compose(self) -> ComposeResult:
+        project_options: list[tuple[str, str]] = [("Inbox", "")]
+        project_options.extend(self.projects)
+
+        with Container(id="dialog"):
+            yield Label("Edit Todoist Task", id="title")
+            yield Label("Title:")
+            yield Input(
+                value=self.initial_content,
+                placeholder="Enter task title",
+                id="content-input",
+            )
+            yield Label("Description:")
+            yield TextArea(
+                self.initial_description,
+                id="description-input",
+            )
+            yield Label("Project:")
+            yield Select(
+                project_options,
+                value=self.initial_project_id or "",
+                id="project-select",
+            )
+            yield Label("Due:")
+            yield Input(
+                value=self.initial_due_string or "",
+                placeholder="today, tomorrow, next week, 2024-01-15, etc.",
+                id="due-input",
+            )
+            with Vertical(id="buttons"):
+                yield Button("Save", variant="primary", id="save-btn")
+                yield Button("Cancel", id="cancel-btn")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save-btn":
+            content_input = self.query_one("#content-input", Input)
+            description_input = self.query_one("#description-input", TextArea)
+            project_select = self.query_one("#project-select", Select)
+            due_input = self.query_one("#due-input", Input)
+
+            content = content_input.value.strip()
+            if not content:
+                content_input.focus()
+                return
+
+            result: dict[str, str] = {"task_id": self.task_id}
+
+            if content != self.initial_content:
+                result["content"] = content
+
+            description = description_input.text
+            if description != self.initial_description:
+                result["description"] = description
+
+            project_id = str(project_select.value)
+            if project_id != (self.initial_project_id or ""):
+                result["project_id"] = project_id
+
+            due_string = due_input.value.strip()
+            if due_string != (self.initial_due_string or ""):
+                result["due_string"] = due_string
+
+            self.dismiss(result)
+        else:
+            self.dismiss(None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter key in the title input."""
+        if event.input.id == "content-input":
+            description_input = self.query_one("#description-input")
+            description_input.focus()
+        elif event.input.id == "due-input":
+            save_btn = self.query_one("#save-btn", Button)
+            self.on_button_pressed(Button.Pressed(save_btn))
 
 
 class CreateGoalModal(ModalScreen[dict[str, str] | None]):

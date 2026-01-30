@@ -41,6 +41,8 @@ from status_dashboard.widgets.create_modals import (
     CreateLinearIssueModal,
     CreateTodoistTaskModal,
     EditTodoistTaskModal,
+    WeeklyGoalsSetupModal,
+    WeeklyReviewModal,
 )
 
 
@@ -406,6 +408,7 @@ class GoalsDataTable(VimDataTable):
         Binding("a", "app.create_goal", "Add Goal"),
         Binding("c", "app.complete_goal", "Complete"),
         Binding("d", "app.delete_goal", "Delete"),
+        Binding("e", "app.open_goals_setup", "Edit Week"),
         Binding("J", "app.move_goal_down", "Move Down", show=False),
         Binding("K", "app.move_goal_up", "Move Up", show=False),
         Binding("shift+down", "app.move_goal_down", "Move Down"),
@@ -473,6 +476,8 @@ class StatusDashboard(App):
 
     _goals: list[goals_db.Goal] = []  # pyright: ignore[reportUninitializedInstanceVariable]
     _goals_showing_review: bool = False  # pyright: ignore[reportUninitializedInstanceVariable]
+    _goals_review_dismissed: bool = False  # pyright: ignore[reportUninitializedInstanceVariable]
+    _goals_week_metrics: goals_db.WeekMetrics | None = None  # pyright: ignore[reportUninitializedInstanceVariable]
 
     CSS = """
     Screen {
@@ -585,6 +590,8 @@ class StatusDashboard(App):
         self._gh_notifications: list[github.Notification] = []
         self._goals: list[goals_db.Goal] = []
         self._goals_showing_review: bool = False
+        self._goals_review_dismissed: bool = False
+        self._goals_week_metrics: goals_db.WeekMetrics | None = None
 
         # Set up goals table
         goals_table = self.query_one("#goals-table", DataTable)
@@ -649,6 +656,22 @@ class StatusDashboard(App):
         this_week = goals_db.get_week_start(today)
         this_week_goals = goals_db.get_goals_for_week(this_week)
 
+        # Load current week metrics
+        self._goals_week_metrics = goals_db.get_week_metrics(this_week)
+
+        # Auto-show review modal on Monday if no current week goals and not dismissed
+        if is_monday and not this_week_goals and not self._goals_review_dismissed:
+            last_week = this_week - timedelta(days=7)
+            last_week_goals = goals_db.get_goals_for_week(last_week)
+            if last_week_goals:
+                # Auto-push the review modal
+                last_week_metrics = goals_db.get_week_metrics(last_week)
+                self._goals_review_dismissed = True  # Prevent re-showing
+                self.push_screen(
+                    WeeklyReviewModal(last_week, last_week_goals, last_week_metrics),
+                    self._handle_review_complete,
+                )
+
         # Show review only if Monday AND no goals yet for this week
         if is_monday and not this_week_goals:
             last_week = this_week - timedelta(days=7)
@@ -671,7 +694,9 @@ class StatusDashboard(App):
         title_widget = panel.query_one(".panel-title", Static)
 
         if self._goals_showing_review:
-            title_widget.update("Weekly Goals (Last Week Review)")
+            title_widget.update(
+                "Weekly Goals (Last Week Review - press 'e' to set up this week)"
+            )
             if not self._goals:
                 table.add_row(
                     "", "", Text("No goals from last week", style="dim italic")
@@ -698,7 +723,17 @@ class StatusDashboard(App):
                     key="goal:prompt",
                 )
         else:
-            title_widget.update("Weekly Goals")
+            # Build title with metrics if available
+            title = "Weekly Goals"
+            if self._goals_week_metrics:
+                m = self._goals_week_metrics
+                if m.h2_2025_estimate is not None and m.predicted_time is not None:
+                    title = f"Weekly Goals (Est: {m.h2_2025_estimate}h / Pred: {m.predicted_time}h)"
+                elif m.h2_2025_estimate is not None:
+                    title = f"Weekly Goals (Est: {m.h2_2025_estimate}h)"
+                elif m.predicted_time is not None:
+                    title = f"Weekly Goals (Pred: {m.predicted_time}h)"
+            title_widget.update(title)
             incomplete_goals = [g for g in self._goals if not g.is_completed]
             if not self._goals:
                 table.add_row(
@@ -2404,6 +2439,89 @@ class StatusDashboard(App):
         # Persist to database
         new_orders = {goal.id: idx for idx, goal in enumerate(movable_goals)}
         goals_db.update_sort_orders(new_orders)
+
+    def action_open_goals_setup(self) -> None:
+        """Open the weekly goals setup modal."""
+        focused = self.focused
+        if not isinstance(focused, DataTable) or focused.id != "goals-table":
+            self.notify("Focus on goals panel first", severity="warning")
+            return
+
+        today = date.today()
+        week_start = goals_db.get_week_start(today)
+        goals = goals_db.get_goals_for_week(week_start)
+        metrics = goals_db.get_week_metrics(week_start)
+
+        self.push_screen(
+            WeeklyGoalsSetupModal(week_start, goals, metrics),
+            self._handle_setup_complete,
+        )
+
+    def _handle_setup_complete(self, result: dict[str, object] | None) -> None:
+        """Handle the result from the weekly goals setup modal."""
+        if not result:
+            return
+
+        week_start: date = result["week_start"]  # pyright: ignore[reportAssignmentType]
+        goals_from_modal: list[goals_db.Goal] = result["goals"]  # pyright: ignore[reportAssignmentType]
+        h2_estimate: float | None = result.get("h2_2025_estimate")  # pyright: ignore[reportAssignmentType]
+        predicted: float | None = result.get("predicted_time")  # pyright: ignore[reportAssignmentType]
+
+        # Get existing goals for comparison
+        existing_goals = {g.id: g for g in goals_db.get_goals_for_week(week_start)}
+        modal_goal_ids = {g.id for g in goals_from_modal if g.id}
+
+        # Delete goals that were removed in the modal
+        for goal_id in existing_goals:
+            if goal_id not in modal_goal_ids:
+                goals_db.delete_goal(goal_id)
+
+        # Create or update goals
+        for goal in goals_from_modal:
+            if not goal.id:
+                # New goal
+                goals_db.create_goal(goal.content, week_start)
+            elif goal.id in existing_goals:
+                existing = existing_goals[goal.id]
+                if existing.content != goal.content:
+                    goals_db.update_goal_content(goal.id, goal.content)
+
+        # Update sort orders
+        new_goals = goals_db.get_goals_for_week(week_start)
+        new_orders = {g.id: idx for idx, g in enumerate(new_goals)}
+        goals_db.update_sort_orders(new_orders)
+
+        # Save metrics
+        if h2_estimate is not None or predicted is not None:
+            goals_db.upsert_week_metrics(
+                week_start,
+                h2_2025_estimate=h2_estimate,
+                predicted_time=predicted,
+            )
+
+        self.notify("Goals saved!")
+        self._refresh_goals()
+
+    def _handle_review_complete(self, result: dict[str, object] | None) -> None:
+        """Handle the result from the weekly review modal."""
+        if not result:
+            self._refresh_goals()
+            return
+
+        week_start: date = result["week_start"]  # pyright: ignore[reportAssignmentType]
+        goal_completions: dict[str, bool] = result.get("goal_completions", {})  # pyright: ignore[reportAssignmentType]
+        actual_time: float | None = result.get("actual_time")  # pyright: ignore[reportAssignmentType]
+
+        # Update goal completion statuses
+        for goal_id, is_completed in goal_completions.items():
+            goals_db.update_goal_completion(goal_id, is_completed)
+
+        # Save actual time
+        if actual_time is not None:
+            goals_db.upsert_week_metrics(week_start, actual_time=actual_time)
+
+        self.notify("Review saved!")
+        self._refresh_goals()
 
 
 def main():

@@ -19,6 +19,16 @@ class Goal:
     sort_order: int
 
 
+@dataclass
+class WeekMetrics:
+    week_start: date
+    h2_2025_estimate: float | None
+    predicted_time: float | None
+    actual_time: float | None
+    created_at: datetime
+    updated_at: datetime
+
+
 def _get_db_path() -> Path:
     """Get the database path, following XDG conventions."""
     xdg_data = os.environ.get("XDG_DATA_HOME")
@@ -44,6 +54,16 @@ def _get_connection() -> sqlite3.Connection:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_week ON goals(week_start)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS week_metrics (
+            week_start DATE PRIMARY KEY,
+            h2_2025_estimate REAL,
+            predicted_time REAL,
+            actual_time REAL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
     conn.commit()
     return conn
 
@@ -173,5 +193,124 @@ def update_sort_orders(ids_to_orders: dict[str, int]) -> bool:
         return True
     except sqlite3.Error:
         return False
+    finally:
+        conn.close()
+
+
+def update_goal_content(goal_id: str, content: str) -> bool:
+    """Update a goal's content. Returns True on success."""
+    conn = _get_connection()
+    try:
+        cursor = conn.execute(
+            "UPDATE goals SET content = ? WHERE id = ?",
+            (content, goal_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_week_metrics(week_start: date) -> WeekMetrics | None:
+    """Get metrics for a given week. Returns None if not found."""
+    conn = _get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            SELECT week_start, h2_2025_estimate, predicted_time, actual_time,
+                   created_at, updated_at
+            FROM week_metrics
+            WHERE week_start = ?
+            """,
+            (week_start.isoformat(),),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return WeekMetrics(
+            week_start=date.fromisoformat(row["week_start"]),
+            h2_2025_estimate=row["h2_2025_estimate"],
+            predicted_time=row["predicted_time"],
+            actual_time=row["actual_time"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+    finally:
+        conn.close()
+
+
+def upsert_week_metrics(
+    week_start: date,
+    h2_2025_estimate: float | None = None,
+    predicted_time: float | None = None,
+    actual_time: float | None = None,
+) -> bool:
+    """Insert or update week metrics. Returns True on success."""
+    conn = _get_connection()
+    try:
+        now = datetime.now().isoformat()
+        existing = conn.execute(
+            "SELECT 1 FROM week_metrics WHERE week_start = ?",
+            (week_start.isoformat(),),
+        ).fetchone()
+
+        if existing:
+            updates = ["updated_at = ?"]
+            params: list[str | float | None] = [now]
+
+            if h2_2025_estimate is not None:
+                updates.append("h2_2025_estimate = ?")
+                params.append(h2_2025_estimate)
+            if predicted_time is not None:
+                updates.append("predicted_time = ?")
+                params.append(predicted_time)
+            if actual_time is not None:
+                updates.append("actual_time = ?")
+                params.append(actual_time)
+
+            params.append(week_start.isoformat())
+            conn.execute(
+                f"UPDATE week_metrics SET {', '.join(updates)} WHERE week_start = ?",
+                params,
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO week_metrics
+                    (week_start, h2_2025_estimate, predicted_time, actual_time,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    week_start.isoformat(),
+                    h2_2025_estimate,
+                    predicted_time,
+                    actual_time,
+                    now,
+                    now,
+                ),
+            )
+        conn.commit()
+        return True
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+
+
+def update_goal_completion(goal_id: str, is_completed: bool) -> bool:
+    """Update a goal's completion status. Returns True on success."""
+    conn = _get_connection()
+    try:
+        now = datetime.now().isoformat() if is_completed else None
+        cursor = conn.execute(
+            """
+            UPDATE goals SET is_completed = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (1 if is_completed else 0, now, goal_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
     finally:
         conn.close()

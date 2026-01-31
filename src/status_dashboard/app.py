@@ -2000,10 +2000,6 @@ class StatusDashboard(App):
         if not temp_id:
             return
 
-        table = self.query_one("#todoist-table", TodoistDataTable)
-        selected_key = self._get_selected_row_key(table)
-        was_selected = selected_key == f"todoist:{temp_id}:"
-
         updated_task: todoist.Task | None = None
         for task in self._todoist_tasks:
             if task.id == temp_id:
@@ -2021,7 +2017,13 @@ class StatusDashboard(App):
 
         await asyncio.to_thread(todoist.update_day_orders, new_orders)
 
-        if was_selected and updated_task:
+        # Check cursor position RIGHT BEFORE rendering to avoid race condition
+        # where user moves cursor during the API call above
+        table = self.query_one("#todoist-table", TodoistDataTable)
+        selected_key = self._get_selected_row_key(table)
+        cursor_on_optimistic = selected_key == f"todoist:{temp_id}:"
+
+        if cursor_on_optimistic and updated_task:
             self._todoist_restore_key = f"todoist:{new_task_id}:{updated_task.url}"
         self._render_todoist_table()
 

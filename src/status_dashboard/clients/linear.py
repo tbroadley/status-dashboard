@@ -312,7 +312,7 @@ def _get_team_issues_without_project(
             headers={"Authorization": api_key},
             timeout=10,
         )
-        response.raise_for_status()
+        _ = response.raise_for_status()
         data = response.json()
     except httpx.TimeoutException:
         logger.error("Linear API request timed out")

@@ -140,7 +140,7 @@ def _get_remote_version() -> str | None:
     url = "https://raw.githubusercontent.com/tbroadley/status-dashboard/main/pyproject.toml"
     try:
         resp = httpx.get(url, timeout=10, follow_redirects=True)
-        resp.raise_for_status()
+        _ = resp.raise_for_status()
         content = resp.text
         for line in content.splitlines():
             if line.startswith("version"):
@@ -440,10 +440,10 @@ class UpdateBanner(Static):
     def show_update(self, new_version: str) -> None:
         self._new_version = new_version
         self.update(f"New version available: v{new_version} (press R to upgrade)")
-        self.add_class("-visible")
+        _ = self.add_class("-visible")
 
     def hide(self) -> None:
-        self.remove_class("-visible")
+        _ = self.remove_class("-visible")
 
 
 class Panel(Container):
@@ -478,6 +478,7 @@ class StatusDashboard(App):
     _goals_showing_review: bool = False  # pyright: ignore[reportUninitializedInstanceVariable]
     _goals_review_dismissed: bool = False  # pyright: ignore[reportUninitializedInstanceVariable]
     _goals_week_metrics: goals_db.WeekMetrics | None = None  # pyright: ignore[reportUninitializedInstanceVariable]
+    _gh_notifications: list[github.Notification] = []  # pyright: ignore[reportUninitializedInstanceVariable]
 
     CSS = """
     Screen {
@@ -595,33 +596,33 @@ class StatusDashboard(App):
 
         # Set up goals table
         goals_table = self.query_one("#goals-table", DataTable)
-        goals_table.add_columns("#", "", "Goal")
+        _ = goals_table.add_columns("#", "", "Goal")
         self._setup_table(goals_table)
 
         # Set up table columns - auto-sized based on content
         my_prs = self.query_one("#my-prs-table", DataTable)
-        my_prs.add_columns("#", "PR", "Title", "Repo", "Status", "CI", "Cmt")
+        _ = my_prs.add_columns("#", "PR", "Title", "Repo", "Status", "CI", "Cmt")
         self._setup_table(my_prs)
 
         reviews = self.query_one("#review-requests-table", DataTable)
-        reviews.add_columns("#", "PR", "Title", "Repo", "Author", "Age", "Reviewed")
+        _ = reviews.add_columns("#", "PR", "Title", "Repo", "Author", "Age", "Reviewed")
         self._setup_table(reviews)
 
         notifs = self.query_one("#notifications-table", DataTable)
-        notifs.add_columns("#", "PR", "Title", "Repo", "Reason", "Age")
+        _ = notifs.add_columns("#", "PR", "Title", "Repo", "Reason", "Age")
         self._setup_table(notifs)
 
         todo = self.query_one("#todoist-table", DataTable)
-        todo.add_columns("#", "!", "", "Time", "#C", "🔗", "Task")
+        _ = todo.add_columns("#", "!", "", "Time", "#C", "🔗", "Task")
         self._setup_table(todo)
 
         lin = self.query_one("#linear-table", DataTable)
-        lin.add_columns("#", "ID", "Title", "Status", "Owner")
+        _ = lin.add_columns("#", "ID", "Title", "Status", "Owner")
         self._setup_table(lin)
 
         self.refresh_all()
-        self.set_interval(60, self.refresh_all)
-        self._check_for_updates()
+        _ = self.set_interval(60, self.refresh_all)
+        _ = self._check_for_updates()
 
     def refresh_all(self) -> None:
         self._refresh_goals()
@@ -667,7 +668,7 @@ class StatusDashboard(App):
                 # Auto-push the review modal
                 last_week_metrics = goals_db.get_week_metrics(last_week)
                 self._goals_review_dismissed = True  # Prevent re-showing
-                self.push_screen(
+                _ = self.push_screen(
                     WeeklyReviewModal(last_week, last_week_goals, last_week_metrics),
                     self._handle_review_complete,
                 )
@@ -687,7 +688,7 @@ class StatusDashboard(App):
         """Render the goals table."""
         table = self.query_one("#goals-table", GoalsDataTable)
         selected_key = self._get_selected_row_key(table)
-        table.clear()
+        _ = table.clear()
 
         # Update panel title
         panel = self.query_one("#goals", Panel)
@@ -698,7 +699,7 @@ class StatusDashboard(App):
                 "Weekly Goals (Last Week Review - press 'e' to set up this week)"
             )
             if not self._goals:
-                table.add_row(
+                _ = table.add_row(
                     "", "", Text("No goals from last week", style="dim italic")
                 )
             else:
@@ -709,14 +710,14 @@ class StatusDashboard(App):
                         if len(goal.content) > 60
                         else goal.content
                     )
-                    table.add_row(
+                    _ = table.add_row(
                         "",
                         checkbox,
                         content,
                         key=f"goal:{goal.id}",
                     )
                 # Add prompt to create new goals
-                table.add_row(
+                _ = table.add_row(
                     "",
                     "",
                     Text("Press 'a' to add goals for this week", style="dim italic"),
@@ -736,14 +737,14 @@ class StatusDashboard(App):
             title_widget.update(title)
             incomplete_goals = [g for g in self._goals if not g.is_completed]
             if not self._goals:
-                table.add_row(
+                _ = table.add_row(
                     "",
                     "",
                     Text("No goals yet - press 'a' to add", style="dim italic"),
                 )
             elif not incomplete_goals:
                 # All goals complete!
-                table.add_row(
+                _ = table.add_row(
                     "",
                     "",
                     Text("All goals complete! Good job!", style="bold green"),
@@ -755,7 +756,7 @@ class StatusDashboard(App):
                         if len(goal.content) > 60
                         else goal.content
                     )
-                    table.add_row(
+                    _ = table.add_row(
                         "",
                         "[ ]",
                         content,
@@ -851,7 +852,7 @@ class StatusDashboard(App):
                 age = github._relative_time(pr.created_at)
                 title = pr.title[:40] + "…" if len(pr.title) > 40 else pr.title
                 reviewed = "✓" if pr.has_other_review else ""
-                table.add_row(
+                _ = table.add_row(
                     "",
                     f"#{pr.number}",
                     title,
@@ -987,7 +988,9 @@ class StatusDashboard(App):
                 empty_msg = "No tasks for tomorrow"
             else:
                 empty_msg = f"No tasks on {selected.strftime('%a %b %d')}"
-            table.add_row("", "", "", "", "", "", Text(empty_msg, style="dim italic"))
+            _ = table.add_row(
+                "", "", "", "", "", "", Text(empty_msg, style="dim italic")
+            )
         else:
             today_str = today.isoformat()
             for task in self._todoist_tasks:
@@ -1005,7 +1008,7 @@ class StatusDashboard(App):
                 content = (
                     task.content[:60] + "…" if len(task.content) > 60 else task.content
                 )
-                table.add_row(
+                _ = table.add_row(
                     "",
                     overdue,
                     checkbox,
@@ -1228,7 +1231,7 @@ class StatusDashboard(App):
             parts = key.split(":", 2)
             if len(parts) >= 2:
                 task_id = parts[1]
-                self._prepare_edit_todoist_task(task_id)
+                _ = self._prepare_edit_todoist_task(task_id)
             return
 
         # Extract URL from key format for other types
@@ -1878,11 +1881,11 @@ class StatusDashboard(App):
                 removed_index = idx
                 break
 
-        if removed_notification is None:
+        if removed_notification is None or removed_index is None:
             return
 
         # Remove from list and re-render
-        self._gh_notifications.pop(removed_index)
+        _ = self._gh_notifications.pop(removed_index)
         self._render_notifications_table(preserve_cursor=False)
 
         # Position cursor appropriately after removal
@@ -1893,7 +1896,9 @@ class StatusDashboard(App):
         table.refresh_line_numbers()
 
         # Make API call in background
-        self._do_mark_notification_read(thread_id, removed_notification, removed_index)
+        _ = self._do_mark_notification_read(
+            thread_id, removed_notification, removed_index
+        )
 
     @work(exclusive=False)
     async def _do_mark_notification_read(
@@ -1955,10 +1960,10 @@ class StatusDashboard(App):
                 table = self.query_one("#todoist-table", TodoistDataTable)
                 table.move_cursor(row=insert_position)
 
-                self._do_create_todoist_task(content, due_string, temp_id)
+                _ = self._do_create_todoist_task(content, due_string, temp_id)
             else:
                 # Task is for a different day, just create it without optimistic UI
-                self._do_create_todoist_task(content, due_string, None)
+                _ = self._do_create_todoist_task(content, due_string, None)
 
     def _calculate_due_date(self, due_string: str) -> date:
         """Calculate the actual due date from a due_string.
@@ -1996,7 +2001,7 @@ class StatusDashboard(App):
                 self._todoist_tasks = [
                     t for t in self._todoist_tasks if t.id != temp_id
                 ]
-                self._todoist_optimistic_tasks.pop(temp_id, None)
+                _ = self._todoist_optimistic_tasks.pop(temp_id, None)
                 self._render_todoist_table()
             return
 
@@ -2054,7 +2059,7 @@ class StatusDashboard(App):
         parts = key.split(":", 2)
         if len(parts) >= 2:
             task_id = parts[1]
-            self._prepare_edit_todoist_task(task_id)
+            _ = self._prepare_edit_todoist_task(task_id)
 
     @work(exclusive=False)
     async def _prepare_edit_todoist_task(self, task_id: str) -> None:
@@ -2074,7 +2079,7 @@ class StatusDashboard(App):
 
         project_options = [(p.name, p.id) for p in projects]
 
-        self.push_screen(
+        _ = self.push_screen(
             EditTodoistTaskModal(
                 task_id=task_id,
                 content=content,
@@ -2094,7 +2099,7 @@ class StatusDashboard(App):
             description = result.get("description")
             project_id = result.get("project_id")
             due_string = result.get("due_string")
-            self._do_update_todoist_task(
+            _ = self._do_update_todoist_task(
                 task_id, content, description, project_id, due_string
             )
 
@@ -2117,7 +2122,7 @@ class StatusDashboard(App):
         )
         if success:
             self.notify("Task updated!")
-            self._refresh_todoist()
+            _ = self._refresh_todoist()
         else:
             self.notify("Failed to update task", severity="error")
 
@@ -2144,7 +2149,7 @@ class StatusDashboard(App):
         if len(parts) >= 3:
             url = parts[2]
             if url:
-                webbrowser.open(url)
+                _ = webbrowser.open(url)
 
     def action_create_linear_issue(self) -> None:
         """Show modal to create a new Linear issue."""
@@ -2319,7 +2324,7 @@ class StatusDashboard(App):
             self.notify("Focus on goals panel first", severity="warning")
             return
 
-        self.push_screen(CreateGoalModal(), self._handle_goal_created)
+        _ = self.push_screen(CreateGoalModal(), self._handle_goal_created)
 
     def _handle_goal_created(self, result: dict[str, str] | None) -> None:
         """Handle the result from the goal creation modal."""
@@ -2327,7 +2332,7 @@ class StatusDashboard(App):
             content = result["content"]
             today = date.today()
             week_start = goals_db.get_week_start(today)
-            goals_db.create_goal(content, week_start)
+            _ = goals_db.create_goal(content, week_start)
             self.notify("Goal added!")
             self._refresh_goals()
 
@@ -2446,7 +2451,7 @@ class StatusDashboard(App):
 
         # Persist to database
         new_orders = {goal.id: idx for idx, goal in enumerate(movable_goals)}
-        goals_db.update_sort_orders(new_orders)
+        _ = goals_db.update_sort_orders(new_orders)
 
     def action_open_goals_setup(self) -> None:
         """Open the weekly goals setup modal."""
@@ -2460,7 +2465,7 @@ class StatusDashboard(App):
         goals = goals_db.get_goals_for_week(week_start)
         metrics = goals_db.get_week_metrics(week_start)
 
-        self.push_screen(
+        _ = self.push_screen(
             WeeklyGoalsSetupModal(week_start, goals, metrics),
             self._handle_setup_complete,
         )
@@ -2482,26 +2487,26 @@ class StatusDashboard(App):
         # Delete goals that were removed in the modal
         for goal_id in existing_goals:
             if goal_id not in modal_goal_ids:
-                goals_db.delete_goal(goal_id)
+                _ = goals_db.delete_goal(goal_id)
 
         # Create or update goals
         for goal in goals_from_modal:
             if not goal.id:
                 # New goal
-                goals_db.create_goal(goal.content, week_start)
+                _ = goals_db.create_goal(goal.content, week_start)
             elif goal.id in existing_goals:
                 existing = existing_goals[goal.id]
                 if existing.content != goal.content:
-                    goals_db.update_goal_content(goal.id, goal.content)
+                    _ = goals_db.update_goal_content(goal.id, goal.content)
 
         # Update sort orders
         new_goals = goals_db.get_goals_for_week(week_start)
         new_orders = {g.id: idx for idx, g in enumerate(new_goals)}
-        goals_db.update_sort_orders(new_orders)
+        _ = goals_db.update_sort_orders(new_orders)
 
         # Save metrics
         if h2_estimate is not None or predicted is not None:
-            goals_db.upsert_week_metrics(
+            _ = goals_db.upsert_week_metrics(
                 week_start,
                 h2_2025_estimate=h2_estimate,
                 predicted_time=predicted,
@@ -2522,11 +2527,11 @@ class StatusDashboard(App):
 
         # Update goal completion statuses
         for goal_id, is_completed in goal_completions.items():
-            goals_db.update_goal_completion(goal_id, is_completed)
+            _ = goals_db.update_goal_completion(goal_id, is_completed)
 
         # Save actual time
         if actual_time is not None:
-            goals_db.upsert_week_metrics(week_start, actual_time=actual_time)
+            _ = goals_db.upsert_week_metrics(week_start, actual_time=actual_time)
 
         self.notify("Review saved!")
         self._refresh_goals()

@@ -427,7 +427,7 @@ def get_projects(api_token: str | None = None) -> list[Project]:
             headers={"Authorization": f"Bearer {token}"},
             timeout=10,
         )
-        response.raise_for_status()
+        _ = response.raise_for_status()
         data = response.json()
         projects = data.get("results", data) if isinstance(data, dict) else data
         return [Project(id=p["id"], name=p["name"]) for p in projects]
@@ -476,7 +476,7 @@ def update_task(
             json=payload,
             timeout=10,
         )
-        response.raise_for_status()
+        _ = response.raise_for_status()
         return True
     except httpx.HTTPStatusError as e:
         logger.error("Failed to update task: %s", e.response.status_code)

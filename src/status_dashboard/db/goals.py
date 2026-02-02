@@ -42,7 +42,7 @@ def _get_connection() -> sqlite3.Connection:
     """Get a database connection and ensure schema exists."""
     conn = sqlite3.connect(_get_db_path())
     conn.row_factory = sqlite3.Row
-    conn.execute("""
+    _ = conn.execute("""
         CREATE TABLE IF NOT EXISTS goals (
             id TEXT PRIMARY KEY,
             content TEXT NOT NULL,
@@ -53,8 +53,8 @@ def _get_connection() -> sqlite3.Connection:
             sort_order INTEGER DEFAULT 0
         )
     """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_week ON goals(week_start)")
-    conn.execute("""
+    _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_week ON goals(week_start)")
+    _ = conn.execute("""
         CREATE TABLE IF NOT EXISTS week_metrics (
             week_start DATE PRIMARY KEY,
             h2_2025_estimate REAL,
@@ -119,7 +119,7 @@ def create_goal(content: str, week_start: date) -> str:
             (week_start.isoformat(),),
         )
         sort_order = cursor.fetchone()[0]
-        conn.execute(
+        _ = conn.execute(
             """
             INSERT INTO goals (id, content, week_start, is_completed, created_at, sort_order)
             VALUES (?, ?, ?, 0, ?, ?)
@@ -185,7 +185,7 @@ def update_sort_orders(ids_to_orders: dict[str, int]) -> bool:
     conn = _get_connection()
     try:
         for goal_id, sort_order in ids_to_orders.items():
-            conn.execute(
+            _ = conn.execute(
                 "UPDATE goals SET sort_order = ? WHERE id = ?",
                 (sort_order, goal_id),
             )
@@ -269,12 +269,12 @@ def upsert_week_metrics(
                 params.append(actual_time)
 
             params.append(week_start.isoformat())
-            conn.execute(
+            _ = conn.execute(
                 f"UPDATE week_metrics SET {', '.join(updates)} WHERE week_start = ?",
                 params,
             )
         else:
-            conn.execute(
+            _ = conn.execute(
                 """
                 INSERT INTO week_metrics
                     (week_start, h2_2025_estimate, predicted_time, actual_time,

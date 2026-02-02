@@ -585,14 +585,14 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
                 yield Button("Save", variant="primary", id="save-btn")
                 yield Button("Cancel", id="cancel-btn")
 
-    def on_mount(self) -> None:
-        self._refresh_goals_list()
+    async def on_mount(self) -> None:
+        await self._refresh_goals_list()
         goals_list = self.query_one("#goals-list", ListView)
         goals_list.focus()
 
-    def _refresh_goals_list(self) -> None:
+    async def _refresh_goals_list(self) -> None:
         goals_list = self.query_one("#goals-list", ListView)
-        goals_list.clear()
+        await goals_list.clear()
 
         if not self.goals:
             goals_list.append(ListItem(Label("No goals yet"), id="empty-placeholder"))
@@ -641,18 +641,18 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
         edit_input.value = self.goals[self._editing_index].content
         edit_input.focus()
 
-    def action_delete_goal(self) -> None:
+    async def action_delete_goal(self) -> None:
         if self._editing_index is not None or not self.goals:
             return
         goals_list = self.query_one("#goals-list", ListView)
         if goals_list.index is None:
             return
         del self.goals[goals_list.index]
-        self._refresh_goals_list()
+        await self._refresh_goals_list()
         if self.goals and goals_list.index >= len(self.goals):
             goals_list.index = len(self.goals) - 1
 
-    def action_move_down(self) -> None:
+    async def action_move_down(self) -> None:
         if self._editing_index is not None or not self.goals:
             return
         goals_list = self.query_one("#goals-list", ListView)
@@ -660,10 +660,10 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
             return
         idx = goals_list.index
         self.goals[idx], self.goals[idx + 1] = self.goals[idx + 1], self.goals[idx]
-        self._refresh_goals_list()
+        await self._refresh_goals_list()
         goals_list.index = idx + 1
 
-    def action_move_up(self) -> None:
+    async def action_move_up(self) -> None:
         if self._editing_index is not None or not self.goals:
             return
         goals_list = self.query_one("#goals-list", ListView)
@@ -671,17 +671,17 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
             return
         idx = goals_list.index
         self.goals[idx], self.goals[idx - 1] = self.goals[idx - 1], self.goals[idx]
-        self._refresh_goals_list()
+        await self._refresh_goals_list()
         goals_list.index = idx - 1
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "edit-input":
-            self._finish_editing()
+            await self._finish_editing()
         elif event.input.id in ("h2-estimate-input", "predicted-input"):
             save_btn = self.query_one("#save-btn", Button)
             self.on_button_pressed(Button.Pressed(save_btn))
 
-    def _finish_editing(self) -> None:
+    async def _finish_editing(self) -> None:
         if self._editing_index is None:
             return
 
@@ -717,7 +717,7 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
         self._editing_index = None
         edit_container = self.query_one("#edit-container")
         edit_container.remove_class("-visible")
-        self._refresh_goals_list()
+        await self._refresh_goals_list()
         goals_list = self.query_one("#goals-list", ListView)
         goals_list.focus()
 

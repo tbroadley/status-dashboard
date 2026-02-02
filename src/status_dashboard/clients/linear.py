@@ -259,7 +259,8 @@ def get_project_issues(
         return []
 
     issues_by_id: dict[str, Issue] = {}
-    projects = data.get("data", {}).get("projects", {}).get("nodes", [])
+    data_payload = data.get("data") or {}
+    projects = data_payload.get("projects", {}).get("nodes", [])
     for proj in projects:
         for issue in proj.get("issues", {}).get("nodes", []):
             assignee = issue.get("assignee")

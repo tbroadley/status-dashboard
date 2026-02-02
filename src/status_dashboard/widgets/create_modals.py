@@ -888,15 +888,15 @@ class WeeklyReviewModal(ModalScreen[dict[str, Any] | None]):
                 yield Button("Done", variant="primary", id="done-btn")
                 yield Button("Skip", id="skip-btn")
 
-    def on_mount(self) -> None:
-        self._refresh_goals_list()
+    async def on_mount(self) -> None:
+        await self._refresh_goals_list()
         goals_list = self.query_one("#review-goals-list", ListView)
         goals_list.focus()
 
-    def _refresh_goals_list(self) -> None:
+    async def _refresh_goals_list(self) -> None:
         goals_list = self.query_one("#review-goals-list", ListView)
         current_index = goals_list.index
-        goals_list.clear()
+        await goals_list.clear()
 
         if not self.goals:
             goals_list.append(
@@ -928,7 +928,7 @@ class WeeklyReviewModal(ModalScreen[dict[str, Any] | None]):
         if goals_list.has_focus and goals_list.index is not None:
             goals_list.index = max(goals_list.index - 1, 0)
 
-    def action_toggle_goal(self) -> None:
+    async def action_toggle_goal(self) -> None:
         if not self.goals:
             return
         goals_list = self.query_one("#review-goals-list", ListView)
@@ -936,12 +936,12 @@ class WeeklyReviewModal(ModalScreen[dict[str, Any] | None]):
             return
         goal = self.goals[goals_list.index]
         self._completions[goal.id] = not self._completions.get(goal.id, False)
-        self._refresh_goals_list()
+        await self._refresh_goals_list()
 
-    def action_toggle_or_submit(self) -> None:
+    async def action_toggle_or_submit(self) -> None:
         goals_list = self.query_one("#review-goals-list", ListView)
         if goals_list.has_focus and self.goals:
-            self.action_toggle_goal()
+            await self.action_toggle_goal()
         else:
             done_btn = self.query_one("#done-btn", Button)
             self.on_button_pressed(Button.Pressed(done_btn))

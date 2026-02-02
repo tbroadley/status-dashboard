@@ -22,6 +22,7 @@ class Task:
     due_date: str | None = None
     due_time: str | None = None
     comment_count: int = 0
+    description: str = ""
 
 
 def _get_token() -> str | None:
@@ -135,6 +136,7 @@ def get_tasks_for_date(target_date: date, api_token: str | None = None) -> list[
                 due_date=due_date,
                 due_time=due_time,
                 comment_count=item.get("comment_count", 0),
+                description=item.get("description", ""),
             )
         )
 

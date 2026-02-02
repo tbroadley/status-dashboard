@@ -612,7 +612,7 @@ class StatusDashboard(App):
         self._setup_table(notifs)
 
         todo = self.query_one("#todoist-table", DataTable)
-        todo.add_columns("#", "!", "", "Time", "#C", "Task")
+        todo.add_columns("#", "!", "", "Time", "#C", "🔗", "Task")
         self._setup_table(todo)
 
         lin = self.query_one("#linear-table", DataTable)
@@ -987,7 +987,7 @@ class StatusDashboard(App):
                 empty_msg = "No tasks for tomorrow"
             else:
                 empty_msg = f"No tasks on {selected.strftime('%a %b %d')}"
-            table.add_row("", "", "", "", "", Text(empty_msg, style="dim italic"))
+            table.add_row("", "", "", "", "", "", Text(empty_msg, style="dim italic"))
         else:
             today_str = today.isoformat()
             for task in self._todoist_tasks:
@@ -997,6 +997,11 @@ class StatusDashboard(App):
                 comment_display = (
                     str(task.comment_count) if task.comment_count > 0 else ""
                 )
+                has_link = (
+                    self._extract_url(task.content) is not None
+                    or self._extract_url(task.description) is not None
+                )
+                link_display = "🔗" if has_link else ""
                 content = (
                     task.content[:60] + "…" if len(task.content) > 60 else task.content
                 )
@@ -1006,6 +1011,7 @@ class StatusDashboard(App):
                     checkbox,
                     time_display,
                     comment_display,
+                    link_display,
                     content,
                     key=f"todoist:{task.id}:{task.url}",
                 )

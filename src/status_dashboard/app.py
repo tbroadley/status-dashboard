@@ -2498,6 +2498,12 @@ class StatusDashboard(App):
         if cell_key.row_key and str(cell_key.row_key.value) == "goal:prompt":
             return
 
+        # Don't allow swapping between abandoned and non-abandoned goals
+        current_goal = movable_goals[current_row]
+        target_goal = movable_goals[target_row]
+        if current_goal.is_abandoned != target_goal.is_abandoned:
+            return
+
         # Swap in the local list
         movable_goals[current_row], movable_goals[target_row] = (
             movable_goals[target_row],

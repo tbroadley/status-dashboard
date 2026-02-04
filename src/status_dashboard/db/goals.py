@@ -109,7 +109,7 @@ def get_goals_for_week(week_start: date) -> list[Goal]:
                    h2_2025_estimate, predicted_time, actual_time
             FROM goals
             WHERE week_start = ?
-            ORDER BY sort_order, created_at
+            ORDER BY is_abandoned, sort_order, created_at
             """,
             (week_start.isoformat(),),
         )

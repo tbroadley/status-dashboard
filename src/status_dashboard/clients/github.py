@@ -15,6 +15,7 @@ BOT_REVIEWERS = {
     "copilot",
     "github-actions",
     "chatgpt-codex-connector",
+    "cursor[bot]",
 }
 
 

@@ -27,6 +27,7 @@ from textual.widgets._footer import FooterKey, FooterLabel, KeyGroup
 from status_dashboard.clients import github, linear, todoist
 from status_dashboard.db import goals as goals_db
 from status_dashboard.undo import (
+    GoalAbandonAction,
     GoalCompleteAction,
     LinearAssignAction,
     LinearMoveAction,
@@ -407,6 +408,7 @@ class GoalsDataTable(VimDataTable):
     BINDINGS = [
         Binding("a", "app.create_goal", "Add Goal"),
         Binding("c", "app.complete_goal", "Complete"),
+        Binding("x", "app.abandon_goal", "Abandon"),
         Binding("d", "app.delete_goal", "Delete"),
         Binding("e", "app.open_goals_setup", "Edit Week"),
         Binding("J", "app.move_goal_down", "Move Down", show=False),
@@ -710,10 +712,14 @@ class StatusDashboard(App):
                         if len(goal.content) > 60
                         else goal.content
                     )
+                    if goal.is_abandoned:
+                        text = Text(f"{checkbox} {content}", style="strike dim")
+                    else:
+                        text = Text(f"{checkbox} {content}")
                     _ = table.add_row(
                         "",
-                        checkbox,
-                        content,
+                        "",
+                        text,
                         key=f"goal:{goal.id}",
                     )
                 # Add prompt to create new goals
@@ -724,25 +730,33 @@ class StatusDashboard(App):
                     key="goal:prompt",
                 )
         else:
-            # Build title with metrics if available
+            # Compute totals from per-goal estimates (non-abandoned, non-completed)
+            active_goals = [
+                g for g in self._goals if not g.is_completed and not g.is_abandoned
+            ]
+            total_h2 = sum(g.h2_2025_estimate or 0 for g in active_goals)
+            total_pred = sum(g.predicted_time or 0 for g in active_goals)
+
+            # Build title with computed totals
             title = "Weekly Goals"
-            if self._goals_week_metrics:
-                m = self._goals_week_metrics
-                if m.h2_2025_estimate is not None and m.predicted_time is not None:
-                    title = f"Weekly Goals (Est: {m.h2_2025_estimate}h / Pred: {m.predicted_time}h)"
-                elif m.h2_2025_estimate is not None:
-                    title = f"Weekly Goals (Est: {m.h2_2025_estimate}h)"
-                elif m.predicted_time is not None:
-                    title = f"Weekly Goals (Pred: {m.predicted_time}h)"
+            if total_h2 > 0 or total_pred > 0:
+                estimates = []
+                if total_h2 > 0:
+                    estimates.append(f"Est: {total_h2:.1f}h")
+                if total_pred > 0:
+                    estimates.append(f"Pred: {total_pred:.1f}h")
+                title = f"Weekly Goals ({' / '.join(estimates)})"
             title_widget.update(title)
-            incomplete_goals = [g for g in self._goals if not g.is_completed]
+
+            # Show non-completed goals (including abandoned ones with strikethrough)
+            visible_goals = [g for g in self._goals if not g.is_completed]
             if not self._goals:
                 _ = table.add_row(
                     "",
                     "",
                     Text("No goals yet - press 'a' to add", style="dim italic"),
                 )
-            elif not incomplete_goals:
+            elif not visible_goals:
                 # All goals complete!
                 _ = table.add_row(
                     "",
@@ -750,16 +764,22 @@ class StatusDashboard(App):
                     Text("All goals complete! Good job!", style="bold green"),
                 )
             else:
-                for goal in incomplete_goals:
+                for goal in visible_goals:
                     content = (
                         goal.content[:60] + "…"
                         if len(goal.content) > 60
                         else goal.content
                     )
+                    if goal.is_abandoned:
+                        text = Text(content, style="strike dim")
+                        checkbox = "[-]"
+                    else:
+                        text = Text(content)
+                        checkbox = "[ ]"
                     _ = table.add_row(
                         "",
-                        "[ ]",
-                        content,
+                        checkbox,
+                        text,
                         key=f"goal:{goal.id}",
                     )
 
@@ -1213,6 +1233,11 @@ class StatusDashboard(App):
 
         elif isinstance(action, GoalCompleteAction):
             success = goals_db.uncomplete_goal(action.goal_id)
+            if success:
+                self._refresh_goals()
+
+        elif isinstance(action, GoalAbandonAction):
+            success = goals_db.unabandon_goal(action.goal_id)
             if success:
                 self._refresh_goals()
 
@@ -2394,6 +2419,48 @@ class StatusDashboard(App):
         else:
             self.notify("Failed to delete goal", severity="error")
 
+    def action_abandon_goal(self) -> None:
+        """Mark the selected goal as abandoned (or restore if already abandoned)."""
+        focused = self.focused
+        if not isinstance(focused, DataTable) or focused.id != "goals-table":
+            self.notify("Select a goal first", severity="warning")
+            return
+
+        if focused.cursor_row is None or focused.row_count == 0:
+            return
+
+        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
+        if not cell_key.row_key or not cell_key.row_key.value:
+            return
+
+        key = str(cell_key.row_key.value)
+        if not key.startswith("goal:") or key == "goal:prompt":
+            return
+
+        goal_id = key.split(":", 1)[1]
+        goal = next((g for g in self._goals if g.id == goal_id), None)
+        if not goal:
+            return
+
+        if goal.is_abandoned:
+            # Already abandoned - restore it
+            if goals_db.unabandon_goal(goal_id):
+                self.notify(f"Restored: {goal.content[:30]}")
+                self._refresh_goals()
+            else:
+                self.notify("Failed to restore goal", severity="error")
+        else:
+            # Abandon the goal
+            if goals_db.abandon_goal(goal_id):
+                description = f"Abandon: {goal.content[:30]}"
+                self._undo_stack.push(
+                    GoalAbandonAction(goal_id=goal_id, description=description)
+                )
+                self.notify(f"Abandoned: {goal.content[:30]}")
+                self._refresh_goals()
+            else:
+                self.notify("Failed to abandon goal", severity="error")
+
     def action_move_goal_down(self) -> None:
         """Move the selected goal down."""
         self._move_goal(1)
@@ -2477,8 +2544,6 @@ class StatusDashboard(App):
 
         week_start: date = result["week_start"]  # pyright: ignore[reportAssignmentType]
         goals_from_modal: list[goals_db.Goal] = result["goals"]  # pyright: ignore[reportAssignmentType]
-        h2_estimate: float | None = result.get("h2_2025_estimate")  # pyright: ignore[reportAssignmentType]
-        predicted: float | None = result.get("predicted_time")  # pyright: ignore[reportAssignmentType]
 
         # Get existing goals for comparison
         existing_goals = {g.id: g for g in goals_db.get_goals_for_week(week_start)}
@@ -2489,28 +2554,35 @@ class StatusDashboard(App):
             if goal_id not in modal_goal_ids:
                 _ = goals_db.delete_goal(goal_id)
 
-        # Create or update goals
-        for goal in goals_from_modal:
+        # Create or update goals with their per-goal estimates
+        for i, goal in enumerate(goals_from_modal):
             if not goal.id:
-                # New goal
-                _ = goals_db.create_goal(goal.content, week_start)
+                # New goal - create and then update estimates
+                new_id = goals_db.create_goal(goal.content, week_start)
+                if goal.h2_2025_estimate is not None or goal.predicted_time is not None:
+                    _ = goals_db.update_goal_estimates(
+                        new_id, goal.h2_2025_estimate, goal.predicted_time
+                    )
             elif goal.id in existing_goals:
                 existing = existing_goals[goal.id]
                 if existing.content != goal.content:
                     _ = goals_db.update_goal_content(goal.id, goal.content)
+                # Always update per-goal estimates
+                _ = goals_db.update_goal_estimates(
+                    goal.id, goal.h2_2025_estimate, goal.predicted_time
+                )
 
-        # Update sort orders
+        # Update sort orders based on modal order
         new_goals = goals_db.get_goals_for_week(week_start)
-        new_orders = {g.id: idx for idx, g in enumerate(new_goals)}
+        # Map modal order to new goals
+        modal_order = {g.content: i for i, g in enumerate(goals_from_modal)}
+        new_orders = {}
+        for g in new_goals:
+            if g.content in modal_order:
+                new_orders[g.id] = modal_order[g.content]
+            else:
+                new_orders[g.id] = len(modal_order)
         _ = goals_db.update_sort_orders(new_orders)
-
-        # Save metrics
-        if h2_estimate is not None or predicted is not None:
-            _ = goals_db.upsert_week_metrics(
-                week_start,
-                h2_2025_estimate=h2_estimate,
-                predicted_time=predicted,
-            )
 
         self.notify("Goals saved!")
         self._refresh_goals()
@@ -2521,17 +2593,16 @@ class StatusDashboard(App):
             self._refresh_goals()
             return
 
-        week_start: date = result["week_start"]  # pyright: ignore[reportAssignmentType]
         goal_completions: dict[str, bool] = result.get("goal_completions", {})  # pyright: ignore[reportAssignmentType]
-        actual_time: float | None = result.get("actual_time")  # pyright: ignore[reportAssignmentType]
+        goal_actual_times: dict[str, float | None] = result.get("goal_actual_times", {})  # pyright: ignore[reportAssignmentType]
 
         # Update goal completion statuses
         for goal_id, is_completed in goal_completions.items():
             _ = goals_db.update_goal_completion(goal_id, is_completed)
 
-        # Save actual time
-        if actual_time is not None:
-            _ = goals_db.upsert_week_metrics(week_start, actual_time=actual_time)
+        # Update per-goal actual times
+        for goal_id, actual_time in goal_actual_times.items():
+            _ = goals_db.update_goal_actual_time(goal_id, actual_time)
 
         self.notify("Review saved!")
         self._refresh_goals()

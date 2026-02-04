@@ -54,6 +54,12 @@ class GoalCompleteAction(UndoAction):
     action_type: str = "goal_complete"
 
 
+@dataclass
+class GoalAbandonAction(UndoAction):
+    goal_id: str = ""
+    action_type: str = "goal_abandon"
+
+
 class UndoStack:
     def __init__(self, max_size: int = 15):
         self._stack: list[UndoAction] = []

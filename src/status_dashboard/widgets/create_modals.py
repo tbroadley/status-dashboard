@@ -462,7 +462,7 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
     #setup-dialog {
         background: $surface;
         border: thick $primary;
-        width: 70;
+        width: 90;
         height: auto;
         max-height: 90%;
         padding: 1 2;
@@ -492,19 +492,38 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
         margin-bottom: 1;
     }
 
-    .metrics-row {
-        layout: horizontal;
+    #estimate-inputs-container {
         height: auto;
+        max-height: 10;
         margin-bottom: 1;
     }
 
-    .metrics-row Label {
-        width: 28;
-        margin-top: 0;
+    .estimate-row {
+        layout: horizontal;
+        height: 3;
+        padding: 0 1;
     }
 
-    .metrics-row Input {
-        width: 12;
+    .estimate-label {
+        width: 1fr;
+    }
+
+    .estimate-input {
+        width: 10;
+        margin-left: 1;
+    }
+
+    #totals-row {
+        layout: horizontal;
+        height: auto;
+        padding: 0 1;
+        margin-bottom: 1;
+        background: $surface-darken-1;
+    }
+
+    #totals-row Label {
+        margin-top: 0;
+        margin-right: 2;
     }
 
     #setup-buttons {
@@ -549,19 +568,9 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
 
     def compose(self) -> ComposeResult:
         week_str = self.week_start.strftime("%b %d, %Y")
-        h2_estimate = (
-            str(self.metrics.h2_2025_estimate)
-            if self.metrics and self.metrics.h2_2025_estimate is not None
-            else ""
-        )
-        predicted = (
-            str(self.metrics.predicted_time)
-            if self.metrics and self.metrics.predicted_time is not None
-            else ""
-        )
 
         with Container(id="setup-dialog"):
-            yield Label(f"Weekly Goals - Week of {week_str}", id="title")
+            yield Label(f"Weekly Goals - Week of {week_str}", id="setup-title")
             yield Label("Goals:")
             yield ListView(id="goals-list")
             yield Label(
@@ -571,15 +580,13 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
             with Container(id="edit-container"):
                 yield Input(placeholder="Edit goal", id="edit-input")
 
-            with Horizontal(classes="metrics-row"):
-                yield Label("H2 2025 estimate (hours):")
-                yield Input(
-                    value=h2_estimate, placeholder="0.0", id="h2-estimate-input"
-                )
+            yield Label("Time estimates (per goal):")
+            yield Vertical(id="estimate-inputs-container")
 
-            with Horizontal(classes="metrics-row"):
-                yield Label("Predicted time (hours):")
-                yield Input(value=predicted, placeholder="0.0", id="predicted-input")
+            with Horizontal(id="totals-row"):
+                yield Label("Totals:", id="totals-label")
+                yield Label("H2: 0.0h", id="total-h2")
+                yield Label("Pred: 0.0h", id="total-pred")
 
             with Horizontal(id="setup-buttons"):
                 yield Button("Save", variant="primary", id="save-btn")
@@ -587,6 +594,7 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
 
     def on_mount(self) -> None:
         self._refresh_goals_list()
+        self._refresh_estimate_inputs()
         goals_list = self.query_one("#goals-list", ListView)
         _ = goals_list.focus()
 
@@ -596,7 +604,7 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
 
         if not self.goals:
             _ = goals_list.append(
-                ListItem(Label("No goals yet"), id="empty-placeholder")
+                ListItem(Label("No goals yet"), id="setup-empty-placeholder")
             )
         else:
             for i, goal in enumerate(self.goals):
@@ -604,8 +612,84 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
                     goal.content[:55] + "…" if len(goal.content) > 55 else goal.content
                 )
                 _ = goals_list.append(
-                    ListItem(Label(f"{i + 1}. {content}"), id=f"goal-{i}")
+                    ListItem(Label(f"{i + 1}. {content}"), id=f"setup-goal-{i}")
                 )
+
+    def _refresh_estimate_inputs(self) -> None:
+        container = self.query_one("#estimate-inputs-container", Vertical)
+        _ = container.remove_children()
+
+        if not self.goals:
+            _ = container.mount(Label("No goals to estimate", classes="estimate-label"))
+        else:
+            for i, goal in enumerate(self.goals):
+                content = (
+                    goal.content[:35] + "…" if len(goal.content) > 35 else goal.content
+                )
+                h2_val = (
+                    str(goal.h2_2025_estimate)
+                    if goal.h2_2025_estimate is not None
+                    else ""
+                )
+                pred_val = (
+                    str(goal.predicted_time) if goal.predicted_time is not None else ""
+                )
+
+                row = Horizontal(classes="estimate-row", id=f"estimate-row-{i}")
+                _ = container.mount(row)
+                _ = row.mount(Label(f"{i + 1}. {content}", classes="estimate-label"))
+                _ = row.mount(
+                    Input(
+                        value=h2_val,
+                        placeholder="H2",
+                        classes="estimate-input",
+                        id=f"h2-{i}",
+                    )
+                )
+                _ = row.mount(
+                    Input(
+                        value=pred_val,
+                        placeholder="Pred",
+                        classes="estimate-input",
+                        id=f"pred-{i}",
+                    )
+                )
+
+        self._update_totals()
+
+    def _update_totals(self) -> None:
+        total_h2 = 0.0
+        total_pred = 0.0
+
+        for i, goal in enumerate(self.goals):
+            if goal.is_abandoned:
+                continue
+            try:
+                h2_input = self.query_one(f"#h2-{i}", Input)
+                if h2_input.value.strip():
+                    total_h2 += float(h2_input.value.strip())
+            except Exception:
+                if goal.h2_2025_estimate:
+                    total_h2 += goal.h2_2025_estimate
+            try:
+                pred_input = self.query_one(f"#pred-{i}", Input)
+                if pred_input.value.strip():
+                    total_pred += float(pred_input.value.strip())
+            except Exception:
+                if goal.predicted_time:
+                    total_pred += goal.predicted_time
+
+        try:
+            self.query_one("#total-h2", Label).update(f"H2: {total_h2:.1f}h")
+            self.query_one("#total-pred", Label).update(f"Pred: {total_pred:.1f}h")
+        except Exception:
+            pass
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id and (
+            event.input.id.startswith("h2-") or event.input.id.startswith("pred-")
+        ):
+            self._update_totals()
 
     def action_dismiss_modal(self) -> None:
         _ = self.dismiss(None)
@@ -651,6 +735,7 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
             return
         del self.goals[goals_list.index]
         self._refresh_goals_list()
+        self._refresh_estimate_inputs()
         if self.goals and goals_list.index >= len(self.goals):
             goals_list.index = len(self.goals) - 1
 
@@ -663,6 +748,7 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
         idx = goals_list.index
         self.goals[idx], self.goals[idx + 1] = self.goals[idx + 1], self.goals[idx]
         self._refresh_goals_list()
+        self._refresh_estimate_inputs()
         goals_list.index = idx + 1
 
     def action_move_up(self) -> None:
@@ -674,14 +760,12 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
         idx = goals_list.index
         self.goals[idx], self.goals[idx - 1] = self.goals[idx - 1], self.goals[idx]
         self._refresh_goals_list()
+        self._refresh_estimate_inputs()
         goals_list.index = idx - 1
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "edit-input":
             self._finish_editing()
-        elif event.input.id in ("h2-estimate-input", "predicted-input"):
-            save_btn = self.query_one("#save-btn", Button)
-            self.on_button_pressed(Button.Pressed(save_btn))
 
     def _finish_editing(self) -> None:
         if self._editing_index is None:
@@ -698,57 +782,82 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
                     content=content,
                     week_start=self.week_start,
                     is_completed=False,
+                    is_abandoned=False,
                     completed_at=None,
+                    abandoned_at=None,
                     created_at=__import__("datetime").datetime.now(),
                     sort_order=len(self.goals),
                 )
                 self.goals.append(new_goal)
             else:
-                # Editing existing goal
+                # Editing existing goal - preserve all fields including estimates
                 goal = self.goals[self._editing_index]
                 self.goals[self._editing_index] = goals_db.Goal(
                     id=goal.id,
                     content=content,
                     week_start=goal.week_start,
                     is_completed=goal.is_completed,
+                    is_abandoned=goal.is_abandoned,
                     completed_at=goal.completed_at,
+                    abandoned_at=goal.abandoned_at,
                     created_at=goal.created_at,
                     sort_order=goal.sort_order,
+                    h2_2025_estimate=goal.h2_2025_estimate,
+                    predicted_time=goal.predicted_time,
+                    actual_time=goal.actual_time,
                 )
 
         self._editing_index = None
         edit_container = self.query_one("#edit-container")
         _ = edit_container.remove_class("-visible")
         self._refresh_goals_list()
+        self._refresh_estimate_inputs()
         goals_list = self.query_one("#goals-list", ListView)
         _ = goals_list.focus()
 
+    def _collect_estimates_from_inputs(self) -> None:
+        """Collect per-goal estimates from input fields into self.goals."""
+        for i, goal in enumerate(self.goals):
+            h2_val: float | None = None
+            pred_val: float | None = None
+
+            try:
+                h2_input = self.query_one(f"#h2-{i}", Input)
+                if h2_input.value.strip():
+                    h2_val = float(h2_input.value.strip())
+            except Exception:
+                pass
+
+            try:
+                pred_input = self.query_one(f"#pred-{i}", Input)
+                if pred_input.value.strip():
+                    pred_val = float(pred_input.value.strip())
+            except Exception:
+                pass
+
+            # Update goal with estimates
+            self.goals[i] = goals_db.Goal(
+                id=goal.id,
+                content=goal.content,
+                week_start=goal.week_start,
+                is_completed=goal.is_completed,
+                is_abandoned=goal.is_abandoned,
+                completed_at=goal.completed_at,
+                abandoned_at=goal.abandoned_at,
+                created_at=goal.created_at,
+                sort_order=goal.sort_order,
+                h2_2025_estimate=h2_val,
+                predicted_time=pred_val,
+                actual_time=goal.actual_time,
+            )
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "save-btn":
-            h2_input = self.query_one("#h2-estimate-input", Input)
-            predicted_input = self.query_one("#predicted-input", Input)
-
-            h2_estimate: float | None = None
-            predicted: float | None = None
-
-            try:
-                if h2_input.value.strip():
-                    h2_estimate = float(h2_input.value.strip())
-            except ValueError:
-                pass
-
-            try:
-                if predicted_input.value.strip():
-                    predicted = float(predicted_input.value.strip())
-            except ValueError:
-                pass
-
+            self._collect_estimates_from_inputs()
             _ = self.dismiss(
                 {
                     "week_start": self.week_start,
                     "goals": self.goals,
-                    "h2_2025_estimate": h2_estimate,
-                    "predicted_time": predicted,
                 }
             )
         else:
@@ -774,7 +883,7 @@ class WeeklyReviewModal(ModalScreen[dict[str, Any] | None]):
     #review-dialog {
         background: $surface;
         border: thick $primary;
-        width: 70;
+        width: 90;
         height: auto;
         max-height: 90%;
         padding: 1 2;
@@ -804,30 +913,43 @@ class WeeklyReviewModal(ModalScreen[dict[str, Any] | None]):
         margin-bottom: 1;
     }
 
-    #estimates-section {
-        margin-top: 1;
+    #actual-times-container {
+        height: auto;
+        max-height: 10;
         margin-bottom: 1;
     }
 
-    #estimates-section Label {
-        margin-top: 0;
+    .actual-row {
+        layout: horizontal;
+        height: 3;
+        padding: 0 1;
+    }
+
+    .actual-label {
+        width: 1fr;
+    }
+
+    .actual-estimates {
+        width: 18;
         color: $text-muted;
     }
 
-    .actual-time-row {
+    .actual-input {
+        width: 10;
+        margin-left: 1;
+    }
+
+    #review-totals-row {
         layout: horizontal;
         height: auto;
-        margin-top: 1;
+        padding: 0 1;
         margin-bottom: 1;
+        background: $surface-darken-1;
     }
 
-    .actual-time-row Label {
-        width: 28;
+    #review-totals-row Label {
         margin-top: 0;
-    }
-
-    .actual-time-row Input {
-        width: 12;
+        margin-right: 2;
     }
 
     #review-buttons {
@@ -858,33 +980,23 @@ class WeeklyReviewModal(ModalScreen[dict[str, Any] | None]):
 
     def compose(self) -> ComposeResult:
         week_str = self.week_start.strftime("%b %d, %Y")
-        h2_str = (
-            f"{self.metrics.h2_2025_estimate} hours"
-            if self.metrics and self.metrics.h2_2025_estimate is not None
-            else "not set"
-        )
-        predicted_str = (
-            f"{self.metrics.predicted_time} hours"
-            if self.metrics and self.metrics.predicted_time is not None
-            else "not set"
-        )
 
         with Container(id="review-dialog"):
             yield Label(f"Weekly Review - Week of {week_str}", id="review-title")
-            yield Label("Goals (Space/Enter to toggle):")
+            yield Label("Goals (Space/Enter to toggle completion):")
             yield ListView(id="review-goals-list")
             yield Label(
                 "[j/k] Navigate  [Space/Enter] Toggle", id="review-keybindings-hint"
             )
 
-            with Vertical(id="estimates-section"):
-                yield Label("Estimates:")
-                yield Label(f"  H2 2025 estimate: {h2_str}")
-                yield Label(f"  Predicted time: {predicted_str}")
+            yield Label("Actual time spent (per goal):")
+            yield Vertical(id="actual-times-container")
 
-            with Horizontal(classes="actual-time-row"):
-                yield Label("Actual time spent (hours):")
-                yield Input(placeholder="0.0", id="actual-time-input")
+            with Horizontal(id="review-totals-row"):
+                yield Label("Totals:", id="review-totals-label")
+                yield Label("H2: 0.0h", id="review-total-h2")
+                yield Label("Pred: 0.0h", id="review-total-pred")
+                yield Label("Actual: 0.0h", id="review-total-actual")
 
             with Horizontal(id="review-buttons"):
                 yield Button("Done", variant="primary", id="done-btn")
@@ -892,6 +1004,7 @@ class WeeklyReviewModal(ModalScreen[dict[str, Any] | None]):
 
     async def on_mount(self) -> None:
         await self._refresh_goals_list()
+        self._refresh_actual_inputs()
         goals_list = self.query_one("#review-goals-list", ListView)
         _ = goals_list.focus()
 
@@ -902,20 +1015,100 @@ class WeeklyReviewModal(ModalScreen[dict[str, Any] | None]):
 
         if not self.goals:
             _ = goals_list.append(
-                ListItem(Label("No goals from last week"), id="empty-placeholder")
+                ListItem(
+                    Label("No goals from last week"), id="review-empty-placeholder"
+                )
             )
         else:
+            from rich.text import Text
+
             for i, goal in enumerate(self.goals):
                 checkbox = "[x]" if self._completions.get(goal.id, False) else "[ ]"
                 content = (
-                    goal.content[:50] + "…" if len(goal.content) > 50 else goal.content
+                    goal.content[:45] + "…" if len(goal.content) > 45 else goal.content
                 )
-                _ = goals_list.append(
-                    ListItem(Label(f"{checkbox} {content}"), id=f"review-goal-{i}")
-                )
+                if goal.is_abandoned:
+                    text = Text(f"{checkbox} {content}", style="strike dim")
+                else:
+                    text = Text(f"{checkbox} {content}")
+                _ = goals_list.append(ListItem(Label(text), id=f"review-goal-{i}"))
 
         if current_index is not None and self.goals:
             goals_list.index = min(current_index, len(self.goals) - 1)
+
+    def _refresh_actual_inputs(self) -> None:
+        container = self.query_one("#actual-times-container", Vertical)
+        _ = container.remove_children()
+
+        if not self.goals:
+            _ = container.mount(Label("No goals to review", classes="actual-label"))
+        else:
+            for i, goal in enumerate(self.goals):
+                content = (
+                    goal.content[:30] + "…" if len(goal.content) > 30 else goal.content
+                )
+
+                # Build estimates string
+                estimates_parts = []
+                if goal.h2_2025_estimate:
+                    estimates_parts.append(f"H2:{goal.h2_2025_estimate:.1f}")
+                if goal.predicted_time:
+                    estimates_parts.append(f"P:{goal.predicted_time:.1f}")
+                estimates_str = " ".join(estimates_parts) if estimates_parts else "-"
+
+                actual_val = (
+                    str(goal.actual_time) if goal.actual_time is not None else ""
+                )
+
+                row = Horizontal(classes="actual-row", id=f"actual-row-{i}")
+                _ = container.mount(row)
+                _ = row.mount(Label(f"{i + 1}. {content}", classes="actual-label"))
+                _ = row.mount(Label(estimates_str, classes="actual-estimates"))
+                _ = row.mount(
+                    Input(
+                        value=actual_val,
+                        placeholder="Actual",
+                        classes="actual-input",
+                        id=f"actual-{i}",
+                    )
+                )
+
+        self._update_totals()
+
+    def _update_totals(self) -> None:
+        total_h2 = sum(
+            g.h2_2025_estimate or 0 for g in self.goals if not g.is_abandoned
+        )
+        total_pred = sum(
+            g.predicted_time or 0 for g in self.goals if not g.is_abandoned
+        )
+
+        total_actual = 0.0
+        for i, goal in enumerate(self.goals):
+            if goal.is_abandoned:
+                continue
+            try:
+                actual_input = self.query_one(f"#actual-{i}", Input)
+                if actual_input.value.strip():
+                    total_actual += float(actual_input.value.strip())
+            except Exception:
+                if goal.actual_time:
+                    total_actual += goal.actual_time
+
+        try:
+            self.query_one("#review-total-h2", Label).update(f"H2: {total_h2:.1f}h")
+            self.query_one("#review-total-pred", Label).update(
+                f"Pred: {total_pred:.1f}h"
+            )
+            self.query_one("#review-total-actual", Label).update(
+                f"Actual: {total_actual:.1f}h"
+            )
+        except Exception:
+            pass
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id and event.input.id.startswith("actual-"):
+            self._update_totals()
 
     def action_dismiss_modal(self) -> None:
         _ = self.dismiss(None)
@@ -937,6 +1130,9 @@ class WeeklyReviewModal(ModalScreen[dict[str, Any] | None]):
         if goals_list.index is None:
             return
         goal = self.goals[goals_list.index]
+        # Don't allow toggling abandoned goals
+        if goal.is_abandoned:
+            return
         self._completions[goal.id] = not self._completions.get(goal.id, False)
         await self._refresh_goals_list()
 
@@ -949,26 +1145,29 @@ class WeeklyReviewModal(ModalScreen[dict[str, Any] | None]):
             self.on_button_pressed(Button.Pressed(done_btn))
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "actual-time-input":
-            done_btn = self.query_one("#done-btn", Button)
-            self.on_button_pressed(Button.Pressed(done_btn))
+        # Move to next input or submit
+        done_btn = self.query_one("#done-btn", Button)
+        self.on_button_pressed(Button.Pressed(done_btn))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "done-btn":
-            actual_input = self.query_one("#actual-time-input", Input)
-
-            actual_time: float | None = None
-            try:
-                if actual_input.value.strip():
-                    actual_time = float(actual_input.value.strip())
-            except ValueError:
-                pass
+            # Collect per-goal actual times
+            goal_actual_times: dict[str, float | None] = {}
+            for i, goal in enumerate(self.goals):
+                try:
+                    actual_input = self.query_one(f"#actual-{i}", Input)
+                    if actual_input.value.strip():
+                        goal_actual_times[goal.id] = float(actual_input.value.strip())
+                    else:
+                        goal_actual_times[goal.id] = None
+                except Exception:
+                    goal_actual_times[goal.id] = None
 
             _ = self.dismiss(
                 {
                     "week_start": self.week_start,
                     "goal_completions": self._completions,
-                    "actual_time": actual_time,
+                    "goal_actual_times": goal_actual_times,
                 }
             )
         else:

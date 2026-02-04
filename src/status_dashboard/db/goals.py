@@ -14,9 +14,14 @@ class Goal:
     content: str
     week_start: date
     is_completed: bool
+    is_abandoned: bool
     completed_at: datetime | None
+    abandoned_at: datetime | None
     created_at: datetime
     sort_order: int
+    h2_2025_estimate: float | None = None
+    predicted_time: float | None = None
+    actual_time: float | None = None
 
 
 @dataclass
@@ -48,12 +53,32 @@ def _get_connection() -> sqlite3.Connection:
             content TEXT NOT NULL,
             week_start DATE NOT NULL,
             is_completed INTEGER DEFAULT 0,
+            is_abandoned INTEGER DEFAULT 0,
             completed_at TEXT,
+            abandoned_at TEXT,
             created_at TEXT NOT NULL,
-            sort_order INTEGER DEFAULT 0
+            sort_order INTEGER DEFAULT 0,
+            h2_2025_estimate REAL,
+            predicted_time REAL,
+            actual_time REAL
         )
     """)
     _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_week ON goals(week_start)")
+    # Migrations for existing databases
+    for col, col_type, default in [
+        ("is_abandoned", "INTEGER", "0"),
+        ("abandoned_at", "TEXT", None),
+        ("h2_2025_estimate", "REAL", None),
+        ("predicted_time", "REAL", None),
+        ("actual_time", "REAL", None),
+    ]:
+        try:
+            default_clause = f" DEFAULT {default}" if default else ""
+            _ = conn.execute(
+                f"ALTER TABLE goals ADD COLUMN {col} {col_type}{default_clause}"
+            )
+        except sqlite3.OperationalError:
+            pass  # Column already exists
     _ = conn.execute("""
         CREATE TABLE IF NOT EXISTS week_metrics (
             week_start DATE PRIMARY KEY,
@@ -79,7 +104,9 @@ def get_goals_for_week(week_start: date) -> list[Goal]:
     try:
         cursor = conn.execute(
             """
-            SELECT id, content, week_start, is_completed, completed_at, created_at, sort_order
+            SELECT id, content, week_start, is_completed, is_abandoned,
+                   completed_at, abandoned_at, created_at, sort_order,
+                   h2_2025_estimate, predicted_time, actual_time
             FROM goals
             WHERE week_start = ?
             ORDER BY sort_order, created_at
@@ -94,13 +121,22 @@ def get_goals_for_week(week_start: date) -> list[Goal]:
                     content=row["content"],
                     week_start=date.fromisoformat(row["week_start"]),
                     is_completed=bool(row["is_completed"]),
+                    is_abandoned=bool(row["is_abandoned"]),
                     completed_at=(
                         datetime.fromisoformat(row["completed_at"])
                         if row["completed_at"]
                         else None
                     ),
+                    abandoned_at=(
+                        datetime.fromisoformat(row["abandoned_at"])
+                        if row["abandoned_at"]
+                        else None
+                    ),
                     created_at=datetime.fromisoformat(row["created_at"]),
                     sort_order=row["sort_order"],
+                    h2_2025_estimate=row["h2_2025_estimate"],
+                    predicted_time=row["predicted_time"],
+                    actual_time=row["actual_time"],
                 )
             )
         return goals
@@ -309,6 +345,79 @@ def update_goal_completion(goal_id: str, is_completed: bool) -> bool:
             WHERE id = ?
             """,
             (1 if is_completed else 0, now, goal_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def abandon_goal(goal_id: str) -> bool:
+    """Mark a goal as abandoned. Returns True on success."""
+    conn = _get_connection()
+    try:
+        now = datetime.now().isoformat()
+        cursor = conn.execute(
+            """
+            UPDATE goals SET is_abandoned = 1, abandoned_at = ?
+            WHERE id = ?
+            """,
+            (now, goal_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def unabandon_goal(goal_id: str) -> bool:
+    """Mark a goal as not abandoned (undo). Returns True on success."""
+    conn = _get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            UPDATE goals SET is_abandoned = 0, abandoned_at = NULL
+            WHERE id = ?
+            """,
+            (goal_id,),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def update_goal_estimates(
+    goal_id: str,
+    h2_2025_estimate: float | None = None,
+    predicted_time: float | None = None,
+) -> bool:
+    """Update a goal's time estimates. Returns True on success."""
+    conn = _get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            UPDATE goals SET h2_2025_estimate = ?, predicted_time = ?
+            WHERE id = ?
+            """,
+            (h2_2025_estimate, predicted_time, goal_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def update_goal_actual_time(goal_id: str, actual_time: float | None) -> bool:
+    """Update a goal's actual time spent. Returns True on success."""
+    conn = _get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            UPDATE goals SET actual_time = ?
+            WHERE id = ?
+            """,
+            (actual_time, goal_id),
         )
         conn.commit()
         return cursor.rowcount > 0

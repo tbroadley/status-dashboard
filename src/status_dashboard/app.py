@@ -1370,10 +1370,30 @@ class StatusDashboard(App):
             task_id = parts[1]
             task_name = self._get_row_content(focused)
             self._todoist_restore_key = self._get_row_key_above(focused)
-            self._do_defer_todoist_task(task_id, task_name)
+
+            # Optimistic update: find and remove task from list
+            removed_task: todoist.Task | None = None
+            removed_index: int = -1
+            for idx, task in enumerate(self._todoist_tasks):
+                if task.id == task_id:
+                    removed_task = task
+                    removed_index = idx
+                    break
+
+            if removed_task is not None:
+                self._todoist_tasks.pop(removed_index)
+                self._render_todoist_table()
+
+            self._do_defer_todoist_task(task_id, task_name, removed_task, removed_index)
 
     @work(exclusive=False)
-    async def _do_defer_todoist_task(self, task_id: str, task_name: str | None) -> None:
+    async def _do_defer_todoist_task(
+        self,
+        task_id: str,
+        task_name: str | None,
+        removed_task: todoist.Task | None,
+        removed_index: int,
+    ) -> None:
         task = await asyncio.to_thread(todoist.get_task, task_id)
         original_due = (
             task.get("due", {}).get("date") if task and task.get("due") else None
@@ -1390,8 +1410,11 @@ class StatusDashboard(App):
                 )
             )
             self.notify("Task deferred to next working day")
-            self._refresh_todoist()
         else:
+            # Rollback: restore the task to its original position
+            if removed_task is not None and removed_index >= 0:
+                self._todoist_tasks.insert(removed_index, removed_task)
+                self._render_todoist_table()
             self.notify("Failed to defer task", severity="error")
 
     def action_delete_task(self) -> None:

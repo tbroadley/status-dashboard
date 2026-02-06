@@ -12,6 +12,93 @@ from textual.widgets import Button, Input, Label, ListItem, ListView, Select, Te
 from status_dashboard.db import goals as goals_db
 
 
+class ConfirmationModal(ModalScreen[bool]):
+    """Generic confirmation modal for destructive actions."""
+
+    BINDINGS = [
+        Binding("escape", "dismiss_modal", "Cancel"),
+        Binding("y", "confirm", "Confirm", show=False),
+        Binding("n", "dismiss_modal", "Cancel", show=False),
+    ]
+
+    CSS = """
+    ConfirmationModal {
+        align: center middle;
+    }
+
+    #confirm-dialog {
+        background: $surface;
+        border: thick $error;
+        width: 50;
+        height: auto;
+        padding: 1 2;
+    }
+
+    #confirm-title {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    #confirm-message {
+        margin-bottom: 1;
+    }
+
+    #confirm-hint {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    #confirm-buttons {
+        layout: horizontal;
+        align: center middle;
+        height: auto;
+        margin-top: 1;
+    }
+
+    #confirm-buttons Button {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(
+        self,
+        title: str,
+        message: str,
+        confirm_label: str = "Delete",
+        *args: Any,
+        **kwargs: Any,
+    ):
+        super().__init__(*args, **kwargs)
+        self._title = title
+        self._message = message
+        self._confirm_label = confirm_label
+
+    def compose(self) -> ComposeResult:
+        with Container(id="confirm-dialog"):
+            yield Label(self._title, id="confirm-title")
+            yield Label(self._message, id="confirm-message")
+            yield Label("[y] Confirm  [n/Esc] Cancel", id="confirm-hint")
+            with Horizontal(id="confirm-buttons"):
+                yield Button(self._confirm_label, variant="error", id="confirm-btn")
+                yield Button("Cancel", id="cancel-btn")
+
+    def on_mount(self) -> None:
+        confirm_btn = self.query_one("#confirm-btn", Button)
+        _ = confirm_btn.focus()
+
+    def action_dismiss_modal(self) -> None:
+        _ = self.dismiss(False)
+
+    def action_confirm(self) -> None:
+        _ = self.dismiss(True)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "confirm-btn":
+            _ = self.dismiss(True)
+        else:
+            _ = self.dismiss(False)
+
+
 class CreateTodoistTaskModal(ModalScreen):
     """Modal for creating a new Todoist task."""
 

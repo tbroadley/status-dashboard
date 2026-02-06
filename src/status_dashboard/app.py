@@ -38,6 +38,7 @@ from status_dashboard.undo import (
     UndoStack,
 )
 from status_dashboard.widgets.create_modals import (
+    ConfirmationModal,
     CreateGoalModal,
     CreateLinearIssueModal,
     CreateTodoistTaskModal,
@@ -1442,7 +1443,29 @@ class StatusDashboard(App):
         parts = key.split(":", 2)
         if len(parts) >= 2:
             task_id = parts[1]
-            self._do_delete_todoist_task(task_id)
+            # Find task name for confirmation message
+            task_name = "this task"
+            for task in self._todoist_tasks:
+                if task.id == task_id:
+                    task_name = (
+                        task.content[:40] + "..."
+                        if len(task.content) > 40
+                        else task.content
+                    )
+                    break
+
+            def handle_delete_confirmation(confirmed: bool) -> None:
+                if confirmed:
+                    self._do_delete_todoist_task(task_id)
+
+            self.push_screen(
+                ConfirmationModal(
+                    title="Delete Task",
+                    message=f"Delete '{task_name}'?",
+                    confirm_label="Delete",
+                ),
+                handle_delete_confirmation,
+            )
 
     @work(exclusive=False)
     async def _do_delete_todoist_task(self, task_id: str) -> None:
@@ -1804,7 +1827,19 @@ class StatusDashboard(App):
         if len(parts) >= 3:
             repo = parts[1]
             pr_number = int(parts[2])
-            self._do_remove_self_as_reviewer(repo, pr_number)
+
+            def handle_remove_reviewer_confirmation(confirmed: bool) -> None:
+                if confirmed:
+                    self._do_remove_self_as_reviewer(repo, pr_number)
+
+            self.push_screen(
+                ConfirmationModal(
+                    title="Remove Self as Reviewer",
+                    message=f"Remove yourself from {repo} PR #{pr_number}?",
+                    confirm_label="Remove",
+                ),
+                handle_remove_reviewer_confirmation,
+            )
 
     @work(exclusive=False)
     async def _do_remove_self_as_reviewer(self, repo: str, pr_number: int) -> None:
@@ -2436,11 +2471,34 @@ class StatusDashboard(App):
             return
 
         goal_id = key.split(":", 1)[1]
-        if goals_db.delete_goal(goal_id):
-            self.notify("Goal deleted")
-            self._refresh_goals()
-        else:
-            self.notify("Failed to delete goal", severity="error")
+
+        # Find goal content for confirmation message
+        goal_name = "this goal"
+        for goal in self._goals:
+            if goal.id == goal_id:
+                goal_name = (
+                    goal.content[:40] + "..."
+                    if len(goal.content) > 40
+                    else goal.content
+                )
+                break
+
+        def handle_goal_delete_confirmation(confirmed: bool) -> None:
+            if confirmed:
+                if goals_db.delete_goal(goal_id):
+                    self.notify("Goal deleted")
+                    self._refresh_goals()
+                else:
+                    self.notify("Failed to delete goal", severity="error")
+
+        self.push_screen(
+            ConfirmationModal(
+                title="Delete Goal",
+                message=f"Delete '{goal_name}'?",
+                confirm_label="Delete",
+            ),
+            handle_goal_delete_confirmation,
+        )
 
     def action_abandon_goal(self) -> None:
         """Mark the selected goal as abandoned (or restore if already abandoned)."""

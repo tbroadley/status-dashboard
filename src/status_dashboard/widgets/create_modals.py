@@ -115,7 +115,7 @@ class CreateTodoistTaskModal(ModalScreen):
     #dialog {
         background: $surface;
         border: thick $primary;
-        width: 60;
+        width: 70;
         height: auto;
         padding: 1 2;
     }
@@ -128,8 +128,9 @@ class CreateTodoistTaskModal(ModalScreen):
         margin-bottom: 1;
     }
 
-    #dialog Select {
+    #dialog TextArea {
         margin-bottom: 1;
+        height: 4;
     }
 
     #buttons {
@@ -148,17 +149,14 @@ class CreateTodoistTaskModal(ModalScreen):
         with Container(id="dialog"):
             yield Label("Create Todoist Task", id="title")
             yield Label("Task:")
-            yield Input(placeholder="Enter task description", id="task-input")
+            yield Input(placeholder="Enter task title", id="task-input")
+            yield Label("Description:")
+            yield TextArea(id="description-input")
             yield Label("Due:")
-            yield Select(
-                [
-                    ("Today", "today"),
-                    ("Tomorrow", "tomorrow"),
-                    ("Monday", "monday"),
-                    ("Next Week", "next week"),
-                ],
+            yield Input(
                 value="today",
-                id="due-select",
+                placeholder="today, tomorrow, next week, 2024-01-15, etc.",
+                id="due-input",
             )
             with Vertical(id="buttons"):
                 yield Button("Create", variant="primary", id="create-btn")
@@ -167,25 +165,30 @@ class CreateTodoistTaskModal(ModalScreen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "create-btn":
             task_input = self.query_one("#task-input", Input)
-            due_select = self.query_one("#due-select", Select)
+            description_input = self.query_one("#description-input", TextArea)
+            due_input = self.query_one("#due-input", Input)
 
             task_content = task_input.value.strip()
             if task_content:
-                self.dismiss(
-                    {
-                        "content": task_content,
-                        "due_string": str(due_select.value),
-                    }
-                )
+                result: dict[str, str] = {
+                    "content": task_content,
+                    "due_string": due_input.value.strip() or "today",
+                }
+                description = description_input.text.strip()
+                if description:
+                    result["description"] = description
+                _ = self.dismiss(result)
             else:
-                task_input.focus()
+                _ = task_input.focus()
         else:
-            self.dismiss(None)
+            _ = self.dismiss(None)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle Enter key in the input."""
         if event.input.id == "task-input":
-            # Simulate create button press
+            description_input = self.query_one("#description-input")
+            _ = description_input.focus()
+        elif event.input.id == "due-input":
             create_btn = self.query_one("#create-btn", Button)
             self.on_button_pressed(Button.Pressed(create_btn))
 

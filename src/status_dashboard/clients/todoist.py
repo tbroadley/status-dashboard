@@ -210,13 +210,23 @@ def defer_task(task_id: str, api_token: str | None = None) -> bool:
 
 
 def create_task(
-    content: str, due_string: str = "today", api_token: str | None = None
+    content: str,
+    due_string: str = "today",
+    description: str = "",
+    api_token: str | None = None,
 ) -> str | None:
     """Create a new Todoist task. Returns the created task ID on success, None on failure."""
     token = api_token or _get_token()
     if not token:
         logger.error("TODOIST_API_TOKEN not set")
         return None
+
+    payload: dict[str, str] = {
+        "content": content,
+        "due_string": due_string,
+    }
+    if description:
+        payload["description"] = description
 
     try:
         response = httpx.post(
@@ -225,10 +235,7 @@ def create_task(
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
             },
-            json={
-                "content": content,
-                "due_string": due_string,
-            },
+            json=payload,
             timeout=10,
         )
         response.raise_for_status()

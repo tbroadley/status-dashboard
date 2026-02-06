@@ -2016,6 +2016,7 @@ class StatusDashboard(App):
         if result:
             content = result["content"]
             due_string = result["due_string"]
+            description = result.get("description", "")
 
             # Calculate the actual due date for the optimistic task
             optimistic_due_date = self._calculate_due_date(due_string)
@@ -2043,10 +2044,12 @@ class StatusDashboard(App):
                 table = self.query_one("#todoist-table", TodoistDataTable)
                 table.move_cursor(row=insert_position)
 
-                _ = self._do_create_todoist_task(content, due_string, temp_id)
+                _ = self._do_create_todoist_task(
+                    content, due_string, description, temp_id
+                )
             else:
                 # Task is for a different day, just create it without optimistic UI
-                _ = self._do_create_todoist_task(content, due_string, None)
+                _ = self._do_create_todoist_task(content, due_string, description, None)
 
     def _calculate_due_date(self, due_string: str) -> date:
         """Calculate the actual due date from a due_string.
@@ -2075,9 +2078,11 @@ class StatusDashboard(App):
 
     @work(exclusive=False)
     async def _do_create_todoist_task(
-        self, content: str, due_string: str, temp_id: str | None
+        self, content: str, due_string: str, description: str, temp_id: str | None
     ) -> None:
-        new_task_id = await asyncio.to_thread(todoist.create_task, content, due_string)
+        new_task_id = await asyncio.to_thread(
+            todoist.create_task, content, due_string, description
+        )
         if not new_task_id:
             self.notify("Failed to create task", severity="error")
             if temp_id:

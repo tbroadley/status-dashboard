@@ -352,10 +352,11 @@ class NotificationsDataTable(VimDataTable):
 
 
 class MyPRsDataTable(VimDataTable):
-    """DataTable for user's PRs with merge binding."""
+    """DataTable for user's PRs with merge and close bindings."""
 
     BINDINGS = [
         Binding("m", "app.merge_pr", "Merge"),
+        Binding("x", "app.close_pr", "Close"),
         Binding("c", "app.copy_pr_link", "Copy Link"),
     ]
 
@@ -1889,6 +1890,53 @@ class StatusDashboard(App):
             self._refresh_my_prs()
         else:
             self.notify("Failed to merge PR", severity="error")
+
+    def action_close_pr(self) -> None:
+        """Close the selected PR without merging."""
+        focused = self.focused
+        if not isinstance(focused, DataTable):
+            return
+
+        if focused.id != "my-prs-table":
+            self.notify("Can only close from My PRs", severity="warning")
+            return
+
+        if focused.cursor_row is None or focused.row_count == 0:
+            return
+
+        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
+        if not cell_key.row_key or not cell_key.row_key.value:
+            return
+
+        url = str(cell_key.row_key.value)
+
+        pr = next((p for p in self._my_prs if p.url == url), None)
+        if not pr:
+            return
+
+        pr_title = pr.title[:40] + "..." if len(pr.title) > 40 else pr.title
+
+        def handle_close_confirmation(confirmed: bool) -> None:
+            if confirmed:
+                self._do_close_pr(pr.repository, pr.number)
+
+        self.push_screen(
+            ConfirmationModal(
+                title="Close PR",
+                message=f"Close '#{pr.number} {pr_title}'?",
+                confirm_label="Close",
+            ),
+            handle_close_confirmation,
+        )
+
+    @work(exclusive=False)
+    async def _do_close_pr(self, repo: str, pr_number: int) -> None:
+        success = await asyncio.to_thread(github.close_pr, repo, pr_number)
+        if success:
+            self.notify(f"Closed PR #{pr_number}")
+            self._refresh_my_prs()
+        else:
+            self.notify("Failed to close PR", severity="error")
 
     def action_copy_pr_link(self) -> None:
         """Copy the selected PR's URL to the clipboard."""

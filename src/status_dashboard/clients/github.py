@@ -329,6 +329,35 @@ def squash_merge_pr(repo: str, pr_number: int) -> bool:
         return False
 
 
+def close_pr(repo: str, pr_number: int) -> bool:
+    """Close a PR without merging.
+
+    Args:
+        repo: Repository in 'owner/name' format
+        pr_number: PR number
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "close", str(pr_number), "--repo", repo],
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT,
+        )
+        if result.returncode != 0:
+            logger.warning("Failed to close PR: %s", result.stderr.strip())
+            return False
+        return True
+    except subprocess.TimeoutExpired:
+        logger.error("gh command timed out after %d seconds", SUBPROCESS_TIMEOUT)
+        return False
+    except FileNotFoundError:
+        logger.error("gh CLI not found. Install it from https://cli.github.com/")
+        return False
+
+
 def get_review_requests(orgs: list[str] | None = None) -> list[ReviewRequest]:
     """Get open PRs where review is requested from current user."""
     owners = orgs or _get_orgs()

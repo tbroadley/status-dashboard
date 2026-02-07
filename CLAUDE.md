@@ -119,6 +119,32 @@ async def refresh_list(self):
 
 The `reportUnusedCallResult` lint rule catches these. If you see a violation for `AwaitMount`, `AwaitRemove`, or `AwaitComplete`, consider whether the code needs to await the result or can use `_ = ...` to indicate fire-and-forget.
 
+## Screenshot Test Harness
+
+Headless TUI testing via `tests/screenshot.py`. Uses Textual's `run_test()` with mocked API clients and fake data (`tests/fake_data.py`). Output goes to `tests/screenshots/` (gitignored).
+
+**One-off screenshots:**
+```bash
+uv run python tests/screenshot.py                              # Default view
+uv run python tests/screenshot.py --keys "j j Tab" --size 120x55
+uv run python tests/screenshot.py --scenario navigation        # Predefined scenario
+```
+
+**Stateful sessions** (replay-based — each run replays all prior keys then applies new ones):
+```bash
+uv run python tests/screenshot.py --session dev --size 120x55  # Start session
+uv run python tests/screenshot.py --session dev --keys "j j j" # Send keys, appended to history
+uv run python tests/screenshot.py --session dev --keys "Tab c"  # Send more keys
+uv run python tests/screenshot.py --session dev                 # Re-render current state
+uv run python tests/screenshot.py --session dev --reset          # Reset to initial state
+```
+
+Session state is stored in `tests/screenshots/sessions/<name>/`:
+- `keys.txt` — newline-delimited key history (replayed each run)
+- `screenshot.txt` — latest rendered output
+
+Use `--size 120x55` to see all 6 panels (default 120x40 cuts off bottom panels).
+
 ## Error Handling
 
 Graceful degradation: API failures result in stale data rather than crashes. The UI continues functioning and errors are logged.

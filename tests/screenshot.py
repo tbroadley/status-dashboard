@@ -76,6 +76,48 @@ PATCHES = [
 ]
 
 
+async def run_session(
+    session_name: str,
+    new_keys: list[str] | None,
+    size: tuple[int, int],
+    output_dir: Path,
+    reset: bool,
+) -> Path:
+    session_dir = output_dir / "sessions" / session_name
+    session_dir.mkdir(parents=True, exist_ok=True)
+    keys_file = session_dir / "keys.txt"
+    screenshot_file = session_dir / "screenshot.txt"
+
+    if reset or not keys_file.exists():
+        all_keys: list[str] = []
+    else:
+        all_keys = [k for k in keys_file.read_text().splitlines() if k]
+
+    if new_keys:
+        all_keys.extend(new_keys)
+
+    _ = keys_file.write_text("\n".join(all_keys) + "\n" if all_keys else "")
+
+    for p in PATCHES:
+        _ = p.start()
+
+    try:
+        app = StatusDashboard()
+        async with app.run_test(size=size) as pilot:  # pyright: ignore[reportUnknownVariableType]
+            await pilot.pause()
+            await pilot.pause()
+            for key in all_keys:
+                await pilot.press(key)
+                await pilot.pause()
+            text = export_text(app)
+            _ = screenshot_file.write_text(text)
+    finally:
+        for p in PATCHES:
+            _ = p.stop()
+
+    return screenshot_file
+
+
 async def run_scenario(
     scenario: str,
     keys: list[str] | None,
@@ -160,17 +202,36 @@ def main() -> None:
         default=Path(__file__).resolve().parent / "screenshots",
         help="Output directory for screenshots",
     )
+    _ = parser.add_argument(
+        "--session", type=str, help="Session name for stateful replay-based interaction"
+    )
+    _ = parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Reset session key history (use with --session)",
+    )
     args = parser.parse_args()
 
-    keys: list[str] | None = args.keys.split() if args.keys else None  # pyright: ignore[reportAny]
-    scenario: str = "custom" if keys and args.scenario == "default" else args.scenario  # pyright: ignore[reportAny]
-
-    saved = asyncio.run(
-        run_scenario(scenario, keys, args.size, args.output_dir)  # pyright: ignore[reportAny]
-    )
-
-    for path in saved:
+    if args.session:  # pyright: ignore[reportAny]
+        keys = args.keys.split() if args.keys else None  # pyright: ignore[reportAny]
+        path = asyncio.run(
+            run_session(args.session, keys, args.size, args.output_dir, args.reset)  # pyright: ignore[reportAny]
+        )
         print(f"Saved: {path}")
+    else:
+        keys = args.keys.split() if args.keys else None  # pyright: ignore[reportAny]
+        scenario: str = (
+            "custom"
+            if keys and args.scenario == "default"  # pyright: ignore[reportAny]
+            else args.scenario  # pyright: ignore[reportAny]
+        )
+
+        saved = asyncio.run(
+            run_scenario(scenario, keys, args.size, args.output_dir)  # pyright: ignore[reportAny]
+        )
+
+        for path in saved:
+            print(f"Saved: {path}")
 
 
 if __name__ == "__main__":

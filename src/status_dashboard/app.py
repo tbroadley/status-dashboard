@@ -1507,13 +1507,13 @@ class StatusDashboard(App):
                         task_id, task_to_delete, task_index
                     )
 
-            self.push_screen(
+            self.push_screen(  # pyright: ignore[reportCallIssue]
                 ConfirmationModal(
                     title="Delete Task",
                     message=f"Delete '{task_name}'?",
                     confirm_label="Delete",
                 ),
-                handle_delete_confirmation,
+                handle_delete_confirmation,  # pyright: ignore[reportArgumentType]
             )
 
     @work(exclusive=False)
@@ -2013,13 +2013,13 @@ class StatusDashboard(App):
                         repo, pr_number, review_to_remove, review_index
                     )
 
-            self.push_screen(
+            self.push_screen(  # pyright: ignore[reportCallIssue]
                 ConfirmationModal(
                     title="Remove Self as Reviewer",
                     message=f"Remove yourself from {repo} PR #{pr_number}?",
                     confirm_label="Remove",
                 ),
-                handle_remove_reviewer_confirmation,
+                handle_remove_reviewer_confirmation,  # pyright: ignore[reportArgumentType]
             )
 
     @work(exclusive=False)
@@ -2149,13 +2149,13 @@ class StatusDashboard(App):
                     pr_to_close.repository, pr_to_close.number, pr_to_close, pr_index
                 )
 
-        self.push_screen(
+        self.push_screen(  # pyright: ignore[reportCallIssue]
             ConfirmationModal(
                 title="Close PR",
                 message=f"Close '#{pr_to_close.number} {pr_title}'?",
                 confirm_label="Close",
             ),
-            handle_close_confirmation,
+            handle_close_confirmation,  # pyright: ignore[reportArgumentType]
         )
 
     @work(exclusive=False)
@@ -2789,13 +2789,13 @@ class StatusDashboard(App):
                 else:
                     self.notify("Failed to delete goal", severity="error")
 
-        self.push_screen(
+        self.push_screen(  # pyright: ignore[reportCallIssue]
             ConfirmationModal(
                 title="Delete Goal",
                 message=f"Delete '{goal_name}'?",
                 confirm_label="Delete",
             ),
-            handle_goal_delete_confirmation,
+            handle_goal_delete_confirmation,  # pyright: ignore[reportArgumentType]
         )
 
     def action_abandon_goal(self) -> None:

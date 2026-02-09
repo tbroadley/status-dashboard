@@ -483,6 +483,8 @@ class StatusDashboard(App):
     _goals_review_dismissed: bool = False  # pyright: ignore[reportUninitializedInstanceVariable]
     _goals_week_metrics: goals_db.WeekMetrics | None = None  # pyright: ignore[reportUninitializedInstanceVariable]
     _gh_notifications: list[github.Notification] = []  # pyright: ignore[reportUninitializedInstanceVariable]
+    _review_requests: list[github.ReviewRequest] = []  # pyright: ignore[reportUninitializedInstanceVariable]
+    _linear_viewer_initials: str | None = None  # pyright: ignore[reportUninitializedInstanceVariable]
 
     CSS = """
     Screen {
@@ -584,6 +586,7 @@ class StatusDashboard(App):
     def on_mount(self) -> None:
         self._undo_stack = UndoStack()
         self._my_prs: list[github.PullRequest] = []
+        self._review_requests: list[github.ReviewRequest] = []
         self._todoist_tasks: list[todoist.Task] = []
         self._todoist_pending_orders: dict[str, int] | None = None
         self._todoist_debounce_handle: object | None = None
@@ -592,6 +595,7 @@ class StatusDashboard(App):
         self._todoist_optimistic_tasks: dict[str, todoist.Task] = {}
         self._linear_issues: list[linear.Issue] = []
         self._linear_debounce_handle: object | None = None
+        self._linear_viewer_initials: str | None = None
         self._gh_notifications: list[github.Notification] = []
         self._goals: list[goals_db.Goal] = []
         self._goals_showing_review: bool = False
@@ -791,19 +795,22 @@ class StatusDashboard(App):
 
     @work(exclusive=False)
     async def _refresh_my_prs(self) -> None:
-        table: DataTable = self.query_one("#my-prs-table", DataTable)
-        selected_key = self._get_selected_row_key(table)
-
         prs = await asyncio.to_thread(github.get_my_prs)
         self._my_prs = prs
+        self._render_my_prs_table()
+
+    def _render_my_prs_table(self, preserve_cursor: bool = True) -> None:
+        table: DataTable = self.query_one("#my-prs-table", DataTable)
+        selected_key = self._get_selected_row_key(table) if preserve_cursor else None
+
         table.clear()
 
-        if not prs:
+        if not self._my_prs:
             table.add_row(
                 "", "", Text("No open PRs", style="dim italic"), "", "", "", ""
             )
         else:
-            for pr in prs:
+            for pr in self._my_prs:
                 if pr.is_draft:
                     status = "draft"
                 elif pr.is_approved:
@@ -841,15 +848,20 @@ class StatusDashboard(App):
                     key=pr.url,
                 )
 
-            self._restore_cursor_by_key(table, selected_key)
+            if selected_key:
+                self._restore_cursor_by_key(table, selected_key)
         table.refresh_line_numbers()
 
     @work(exclusive=False)
     async def _refresh_review_requests(self) -> None:
-        table: DataTable = self.query_one("#review-requests-table", DataTable)
-        selected_key = self._get_selected_row_key(table)
-
         prs = await asyncio.to_thread(github.get_review_requests)
+        self._review_requests = prs
+        self._render_review_requests_table()
+
+    def _render_review_requests_table(self, preserve_cursor: bool = True) -> None:
+        table: DataTable = self.query_one("#review-requests-table", DataTable)
+        selected_key = self._get_selected_row_key(table) if preserve_cursor else None
+
         table.clear()
 
         def _is_visible(pr: github.ReviewRequest) -> bool:
@@ -862,7 +874,7 @@ class StatusDashboard(App):
                 return False
             return True
 
-        visible_prs = [pr for pr in prs if _is_visible(pr)]
+        visible_prs = [pr for pr in self._review_requests if _is_visible(pr)]
 
         if not visible_prs:
             table.add_row(
@@ -885,7 +897,8 @@ class StatusDashboard(App):
                     key=f"review:{pr.repository}:{pr.number}:{pr.url}",
                 )
 
-            self._restore_cursor_by_key(table, selected_key)
+            if selected_key:
+                self._restore_cursor_by_key(table, selected_key)
         table.refresh_line_numbers()
 
     @work(exclusive=False)
@@ -1300,7 +1313,23 @@ class StatusDashboard(App):
                 task_id = parts[1]
                 task_name = self._get_row_content(focused)
                 self._todoist_restore_key = self._get_row_key_above(focused)
-                self._do_complete_todoist_task(task_id, task_name)
+
+                # Optimistic update: find and remove task from list
+                removed_task: todoist.Task | None = None
+                removed_index: int = -1
+                for idx, task in enumerate(self._todoist_tasks):
+                    if task.id == task_id:
+                        removed_task = task
+                        removed_index = idx
+                        break
+
+                if removed_task is not None:
+                    _ = self._todoist_tasks.pop(removed_index)
+                    self._render_todoist_table()
+
+                _ = self._do_complete_todoist_task(
+                    task_id, task_name, removed_task, removed_index
+                )
         elif focused.id == "linear-table" and key.startswith("linear:"):
             # Key format: "linear:{issue_id}:{team_id}:{url}"
             parts = key.split(":", 3)
@@ -1326,7 +1355,11 @@ class StatusDashboard(App):
 
     @work(exclusive=False)
     async def _do_complete_todoist_task(
-        self, task_id: str, task_name: str | None
+        self,
+        task_id: str,
+        task_name: str | None,
+        removed_task: todoist.Task | None,
+        removed_index: int,
     ) -> None:
         success = await asyncio.to_thread(todoist.complete_task, task_id)
         if success:
@@ -1340,8 +1373,11 @@ class StatusDashboard(App):
                 )
             )
             self.notify("Task completed!")
-            self._refresh_todoist()
         else:
+            # Rollback: restore the task to its original position
+            if removed_task is not None and removed_index >= 0:
+                self._todoist_tasks.insert(removed_index, removed_task)
+                self._render_todoist_table()
             self.notify("Failed to complete task", severity="error")
 
     def action_defer_task(self) -> None:
@@ -1383,10 +1419,12 @@ class StatusDashboard(App):
                     break
 
             if removed_task is not None:
-                self._todoist_tasks.pop(removed_index)
+                _ = self._todoist_tasks.pop(removed_index)
                 self._render_todoist_table()
 
-            self._do_defer_todoist_task(task_id, task_name, removed_task, removed_index)
+            _ = self._do_defer_todoist_task(
+                task_id, task_name, removed_task, removed_index
+            )
 
     @work(exclusive=False)
     async def _do_defer_todoist_task(
@@ -1444,20 +1482,30 @@ class StatusDashboard(App):
         parts = key.split(":", 2)
         if len(parts) >= 2:
             task_id = parts[1]
-            # Find task name for confirmation message
+            # Find task name and task object for confirmation message and rollback
             task_name = "this task"
-            for task in self._todoist_tasks:
+            task_to_delete: todoist.Task | None = None
+            task_index: int = -1
+            for idx, task in enumerate(self._todoist_tasks):
                 if task.id == task_id:
                     task_name = (
                         task.content[:40] + "..."
                         if len(task.content) > 40
                         else task.content
                     )
+                    task_to_delete = task
+                    task_index = idx
                     break
 
             def handle_delete_confirmation(confirmed: bool) -> None:
                 if confirmed:
-                    self._do_delete_todoist_task(task_id)
+                    # Optimistic update: remove task from list immediately
+                    if task_to_delete is not None and task_index >= 0:
+                        _ = self._todoist_tasks.pop(task_index)
+                        self._render_todoist_table()
+                    _ = self._do_delete_todoist_task(
+                        task_id, task_to_delete, task_index
+                    )
 
             self.push_screen(
                 ConfirmationModal(
@@ -1469,12 +1517,20 @@ class StatusDashboard(App):
             )
 
     @work(exclusive=False)
-    async def _do_delete_todoist_task(self, task_id: str) -> None:
+    async def _do_delete_todoist_task(
+        self,
+        task_id: str,
+        removed_task: todoist.Task | None,
+        removed_index: int,
+    ) -> None:
         success = await asyncio.to_thread(todoist.delete_task, task_id)
         if success:
             self.notify("Task deleted")
-            self._refresh_todoist()
         else:
+            # Rollback: restore the task to its original position
+            if removed_task is not None and removed_index >= 0:
+                self._todoist_tasks.insert(removed_index, removed_task)
+                self._render_todoist_table()
             self.notify("Failed to delete task", severity="error")
 
     def action_move_task_down(self) -> None:
@@ -1678,7 +1734,45 @@ class StatusDashboard(App):
             issue_id = parts[1]
             team_id = parts[2]
             issue_identifier = self._get_row_identifier(focused)
-            self._do_set_linear_state(issue_id, team_id, state, issue_identifier)
+
+            # Optimistic update: find issue and update its state
+            issue_to_update: linear.Issue | None = None
+            original_state: str | None = None
+            removed_issue: linear.Issue | None = None
+            removed_index: int = -1
+
+            for idx, issue in enumerate(self._linear_issues):
+                if issue.id == issue_id:
+                    issue_to_update = issue
+                    original_state = issue.state
+                    break
+
+            state_display = linear.STATE_NAME_MAP.get(state, state)
+
+            if issue_to_update is not None:
+                # Check if new state will remove the issue from view
+                if state_display in ("Done", "Canceled", "Duplicate"):
+                    # Remove from list
+                    for idx, issue in enumerate(self._linear_issues):
+                        if issue.id == issue_id:
+                            removed_issue = issue
+                            removed_index = idx
+                            _ = self._linear_issues.pop(idx)
+                            break
+                else:
+                    # Update state in place
+                    issue_to_update.state = state_display
+                self._render_linear_table()
+
+            _ = self._do_set_linear_state(
+                issue_id,
+                team_id,
+                state,
+                issue_identifier,
+                original_state,
+                removed_issue,
+                removed_index,
+            )
 
     def _get_row_identifier(self, table: DataTable) -> str:
         """Get the identifier (second column, after line numbers) from the current row."""
@@ -1692,29 +1786,43 @@ class StatusDashboard(App):
 
     @work(exclusive=False)
     async def _do_set_linear_state(
-        self, issue_id: str, team_id: str, state: str, issue_identifier: str | None
+        self,
+        issue_id: str,
+        team_id: str,
+        state: str,
+        issue_identifier: str | None,
+        original_state: str | None,
+        removed_issue: linear.Issue | None,
+        removed_index: int,
     ) -> None:
-        issue = await asyncio.to_thread(linear.get_issue, issue_id)
-        previous_state = issue.get("state", {}).get("name") if issue else None
-
         state_display = linear.STATE_NAME_MAP.get(state, state)
         success = await asyncio.to_thread(
             linear.set_issue_state, issue_id, team_id, state
         )
         if success:
-            if previous_state:
+            if original_state:
                 description = f"Set {issue_identifier or issue_id} to {state_display}"
                 self._undo_stack.push(
                     LinearSetStateAction(
                         issue_id=issue_id,
                         team_id=team_id,
-                        previous_state=previous_state,
+                        previous_state=original_state,
                         description=description,
                     )
                 )
             self.notify(f"Moved to {state_display}")
-            self._refresh_linear()
         else:
+            # Rollback: restore original state or re-insert removed issue
+            if removed_issue is not None and removed_index >= 0:
+                self._linear_issues.insert(removed_index, removed_issue)
+                self._render_linear_table()
+            elif original_state is not None:
+                # Find the issue and restore its state
+                for issue in self._linear_issues:
+                    if issue.id == issue_id:
+                        issue.state = original_state
+                        break
+                self._render_linear_table()
             self.notify(f"Failed to set state to {state_display}", severity="error")
 
     def _get_selected_linear_issue_id(self) -> str | None:
@@ -1746,8 +1854,22 @@ class StatusDashboard(App):
             self.notify("Select a Linear issue first", severity="warning")
             return
         issue_identifier = self._get_row_identifier(focused)
-        self._do_assign_linear_issue(
-            issue_id, assign=True, issue_identifier=issue_identifier
+
+        # Optimistic update: find issue and update assignee_initials
+        original_initials: str | None = None
+        for issue in self._linear_issues:
+            if issue.id == issue_id:
+                original_initials = issue.assignee_initials
+                # Use cached initials if available, otherwise use "..." placeholder
+                issue.assignee_initials = self._linear_viewer_initials or "..."
+                break
+        self._render_linear_table()
+
+        _ = self._do_assign_linear_issue(
+            issue_id,
+            assign=True,
+            issue_identifier=issue_identifier,
+            original_initials=original_initials,
         )
 
     def action_unassign_linear(self) -> None:
@@ -1760,13 +1882,30 @@ class StatusDashboard(App):
             self.notify("Select a Linear issue first", severity="warning")
             return
         issue_identifier = self._get_row_identifier(focused)
-        self._do_assign_linear_issue(
-            issue_id, assign=False, issue_identifier=issue_identifier
+
+        # Optimistic update: find issue and clear assignee_initials
+        original_initials: str | None = None
+        for issue in self._linear_issues:
+            if issue.id == issue_id:
+                original_initials = issue.assignee_initials
+                issue.assignee_initials = ""
+                break
+        self._render_linear_table()
+
+        _ = self._do_assign_linear_issue(
+            issue_id,
+            assign=False,
+            issue_identifier=issue_identifier,
+            original_initials=original_initials,
         )
 
     @work(exclusive=False)
     async def _do_assign_linear_issue(
-        self, issue_id: str, assign: bool, issue_identifier: str | None
+        self,
+        issue_id: str,
+        assign: bool,
+        issue_identifier: str | None,
+        original_initials: str | None,
     ) -> None:
         issue = await asyncio.to_thread(linear.get_issue, issue_id)
         previous_assignee_id = (
@@ -1778,9 +1917,30 @@ class StatusDashboard(App):
         if assign:
             viewer_id = await asyncio.to_thread(linear.get_viewer_id)
             if not viewer_id:
+                # Rollback: restore original initials
+                for i in self._linear_issues:
+                    if i.id == issue_id:
+                        i.assignee_initials = original_initials
+                        break
+                self._render_linear_table()
                 self.notify("Failed to get your user ID", severity="error")
                 return
             assignee_id = viewer_id
+
+            # Fetch and cache viewer initials for future optimistic updates
+            if not self._linear_viewer_initials:
+                team_members = await asyncio.to_thread(linear.get_team_members)
+                for member in team_members:
+                    if member.get("id") == viewer_id:
+                        name = member.get("displayName") or member.get("name")
+                        if name:
+                            self._linear_viewer_initials = linear._get_initials(name)
+                            # Update the optimistic placeholder with real initials
+                            for i in self._linear_issues:
+                                if i.id == issue_id and i.assignee_initials == "...":
+                                    i.assignee_initials = self._linear_viewer_initials
+                            self._render_linear_table()
+                        break
         else:
             assignee_id = None
 
@@ -1797,8 +1957,13 @@ class StatusDashboard(App):
                 )
             )
             self.notify("Assigned to you" if assign else "Unassigned")
-            self._refresh_linear()
         else:
+            # Rollback: restore original initials
+            for i in self._linear_issues:
+                if i.id == issue_id:
+                    i.assignee_initials = original_initials
+                    break
+            self._render_linear_table()
             self.notify("Failed to update assignment", severity="error")
 
     def action_remove_self_as_reviewer(self) -> None:
@@ -1829,9 +1994,24 @@ class StatusDashboard(App):
             repo = parts[1]
             pr_number = int(parts[2])
 
+            # Find the review request for optimistic update
+            review_to_remove: github.ReviewRequest | None = None
+            review_index: int = -1
+            for idx, r in enumerate(self._review_requests):
+                if r.repository == repo and r.number == pr_number:
+                    review_to_remove = r
+                    review_index = idx
+                    break
+
             def handle_remove_reviewer_confirmation(confirmed: bool) -> None:
                 if confirmed:
-                    self._do_remove_self_as_reviewer(repo, pr_number)
+                    # Optimistic update: remove review request from list immediately
+                    if review_to_remove is not None and review_index >= 0:
+                        _ = self._review_requests.pop(review_index)
+                        self._render_review_requests_table()
+                    _ = self._do_remove_self_as_reviewer(
+                        repo, pr_number, review_to_remove, review_index
+                    )
 
             self.push_screen(
                 ConfirmationModal(
@@ -1843,14 +2023,23 @@ class StatusDashboard(App):
             )
 
     @work(exclusive=False)
-    async def _do_remove_self_as_reviewer(self, repo: str, pr_number: int) -> None:
+    async def _do_remove_self_as_reviewer(
+        self,
+        repo: str,
+        pr_number: int,
+        removed_review: github.ReviewRequest | None,
+        removed_index: int,
+    ) -> None:
         success = await asyncio.to_thread(
             github.remove_self_as_reviewer, repo, pr_number
         )
         if success:
             self.notify(f"Removed from PR #{pr_number}")
-            self._refresh_review_requests()
         else:
+            # Rollback: restore the review request to its original position
+            if removed_review is not None and removed_index >= 0:
+                self._review_requests.insert(removed_index, removed_review)
+                self._render_review_requests_table()
             self.notify("Failed to remove self as reviewer", severity="error")
 
     def action_merge_pr(self) -> None:
@@ -1880,15 +2069,37 @@ class StatusDashboard(App):
             self.notify("Can only merge approved PRs", severity="warning")
             return
 
-        self._do_merge_pr(pr.repository, pr.number)
+        # Optimistic update: find and remove PR from list
+        removed_pr: github.PullRequest | None = None
+        removed_index: int = -1
+        for idx, p in enumerate(self._my_prs):
+            if p.url == url:
+                removed_pr = p
+                removed_index = idx
+                break
+
+        if removed_pr is not None:
+            _ = self._my_prs.pop(removed_index)
+            self._render_my_prs_table()
+
+        _ = self._do_merge_pr(pr.repository, pr.number, removed_pr, removed_index)
 
     @work(exclusive=False)
-    async def _do_merge_pr(self, repo: str, pr_number: int) -> None:
+    async def _do_merge_pr(
+        self,
+        repo: str,
+        pr_number: int,
+        removed_pr: github.PullRequest | None,
+        removed_index: int,
+    ) -> None:
         success = await asyncio.to_thread(github.squash_merge_pr, repo, pr_number)
         if success:
             self.notify(f"Merged PR #{pr_number}")
-            self._refresh_my_prs()
         else:
+            # Rollback: restore the PR to its original position
+            if removed_pr is not None and removed_index >= 0:
+                self._my_prs.insert(removed_index, removed_pr)
+                self._render_my_prs_table()
             self.notify("Failed to merge PR", severity="error")
 
     def action_close_pr(self) -> None:
@@ -1910,32 +2121,59 @@ class StatusDashboard(App):
 
         url = str(cell_key.row_key.value)
 
-        pr = next((p for p in self._my_prs if p.url == url), None)
-        if not pr:
+        # Find PR and its index for optimistic update
+        pr_to_close: github.PullRequest | None = None
+        pr_index: int = -1
+        for idx, p in enumerate(self._my_prs):
+            if p.url == url:
+                pr_to_close = p
+                pr_index = idx
+                break
+
+        if not pr_to_close:
             return
 
-        pr_title = pr.title[:40] + "..." if len(pr.title) > 40 else pr.title
+        pr_title = (
+            pr_to_close.title[:40] + "..."
+            if len(pr_to_close.title) > 40
+            else pr_to_close.title
+        )
 
         def handle_close_confirmation(confirmed: bool) -> None:
             if confirmed:
-                self._do_close_pr(pr.repository, pr.number)
+                # Optimistic update: remove PR from list immediately
+                if pr_to_close is not None and pr_index >= 0:
+                    _ = self._my_prs.pop(pr_index)
+                    self._render_my_prs_table()
+                _ = self._do_close_pr(
+                    pr_to_close.repository, pr_to_close.number, pr_to_close, pr_index
+                )
 
         self.push_screen(
             ConfirmationModal(
                 title="Close PR",
-                message=f"Close '#{pr.number} {pr_title}'?",
+                message=f"Close '#{pr_to_close.number} {pr_title}'?",
                 confirm_label="Close",
             ),
             handle_close_confirmation,
         )
 
     @work(exclusive=False)
-    async def _do_close_pr(self, repo: str, pr_number: int) -> None:
+    async def _do_close_pr(
+        self,
+        repo: str,
+        pr_number: int,
+        removed_pr: github.PullRequest | None,
+        removed_index: int,
+    ) -> None:
         success = await asyncio.to_thread(github.close_pr, repo, pr_number)
         if success:
             self.notify(f"Closed PR #{pr_number}")
-            self._refresh_my_prs()
         else:
+            # Rollback: restore the PR to its original position
+            if removed_pr is not None and removed_index >= 0:
+                self._my_prs.insert(removed_index, removed_pr)
+                self._render_my_prs_table()
             self.notify("Failed to close PR", severity="error")
 
     def action_copy_pr_link(self) -> None:
@@ -2495,14 +2733,21 @@ class StatusDashboard(App):
         if not goal:
             return
 
+        # Optimistic update: mark goal as completed in local list
+        original_is_completed = goal.is_completed
+        goal.is_completed = True
+        self._render_goals_table()
+
         if goals_db.complete_goal(goal_id):
             description = f"Complete: {goal.content[:30]}"
             self._undo_stack.push(
                 GoalCompleteAction(goal_id=goal_id, description=description)
             )
             self.notify("Goal completed!")
-            self._refresh_goals()
         else:
+            # Rollback: restore original completion state
+            goal.is_completed = original_is_completed
+            self._render_goals_table()
             self.notify("Failed to complete goal", severity="error")
 
     def action_delete_goal(self) -> None:
@@ -2576,23 +2821,38 @@ class StatusDashboard(App):
         if not goal:
             return
 
+        # Store original state for rollback
+        original_is_abandoned = goal.is_abandoned
+
         if goal.is_abandoned:
             # Already abandoned - restore it
+            # Optimistic update: mark as not abandoned
+            goal.is_abandoned = False
+            self._render_goals_table()
+
             if goals_db.unabandon_goal(goal_id):
                 self.notify(f"Restored: {goal.content[:30]}")
-                self._refresh_goals()
             else:
+                # Rollback
+                goal.is_abandoned = original_is_abandoned
+                self._render_goals_table()
                 self.notify("Failed to restore goal", severity="error")
         else:
             # Abandon the goal
+            # Optimistic update: mark as abandoned
+            goal.is_abandoned = True
+            self._render_goals_table()
+
             if goals_db.abandon_goal(goal_id):
                 description = f"Abandon: {goal.content[:30]}"
                 self._undo_stack.push(
                     GoalAbandonAction(goal_id=goal_id, description=description)
                 )
                 self.notify(f"Abandoned: {goal.content[:30]}")
-                self._refresh_goals()
             else:
+                # Rollback
+                goal.is_abandoned = original_is_abandoned
+                self._render_goals_table()
                 self.notify("Failed to abandon goal", severity="error")
 
     def action_move_goal_down(self) -> None:

@@ -684,7 +684,7 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
 
     async def on_mount(self) -> None:
         await self._refresh_goals_list()
-        self._refresh_estimate_inputs()
+        await self._refresh_estimate_inputs()
         goals_list = self.query_one("#goals-list", ListView)
         _ = goals_list.focus()
 
@@ -705,9 +705,9 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
                     ListItem(Label(f"{i + 1}. {content}"), id=f"setup-goal-{i}")
                 )
 
-    def _refresh_estimate_inputs(self) -> None:
+    async def _refresh_estimate_inputs(self) -> None:
         container = self.query_one("#estimate-inputs-container", Vertical)
-        _ = container.remove_children()
+        await container.remove_children()
 
         if not self.goals:
             _ = container.mount(Label("No goals to estimate", classes="estimate-label"))
@@ -825,7 +825,7 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
             return
         del self.goals[goals_list.index]
         await self._refresh_goals_list()
-        self._refresh_estimate_inputs()
+        await self._refresh_estimate_inputs()
         if self.goals and goals_list.index >= len(self.goals):
             goals_list.index = len(self.goals) - 1
 
@@ -838,7 +838,7 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
         idx = goals_list.index
         self.goals[idx], self.goals[idx + 1] = self.goals[idx + 1], self.goals[idx]
         await self._refresh_goals_list()
-        self._refresh_estimate_inputs()
+        await self._refresh_estimate_inputs()
         goals_list.index = idx + 1
 
     async def action_move_up(self) -> None:
@@ -850,7 +850,7 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
         idx = goals_list.index
         self.goals[idx], self.goals[idx - 1] = self.goals[idx - 1], self.goals[idx]
         await self._refresh_goals_list()
-        self._refresh_estimate_inputs()
+        await self._refresh_estimate_inputs()
         goals_list.index = idx - 1
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -901,7 +901,7 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
         edit_container = self.query_one("#edit-container")
         _ = edit_container.remove_class("-visible")
         await self._refresh_goals_list()
-        self._refresh_estimate_inputs()
+        await self._refresh_estimate_inputs()
         goals_list = self.query_one("#goals-list", ListView)
         _ = goals_list.focus()
 

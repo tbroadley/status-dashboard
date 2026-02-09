@@ -103,7 +103,7 @@ async def run_session(
 
     try:
         app = StatusDashboard()
-        async with app.run_test(size=size) as pilot:  # pyright: ignore[reportUnknownVariableType]
+        async with app.run_test(size=size) as pilot:
             await pilot.pause()
             await pilot.pause()
             for key in all_keys:
@@ -131,7 +131,7 @@ async def run_scenario(
 
     try:
         app = StatusDashboard()
-        async with app.run_test(size=size) as pilot:  # pyright: ignore[reportUnknownVariableType]
+        async with app.run_test(size=size) as pilot:
             await pilot.pause()
             await pilot.pause()
 

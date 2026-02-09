@@ -5,22 +5,24 @@ import logging.handlers
 import os
 import re
 import sys
+import uuid
 import webbrowser
 from collections import defaultdict
 from datetime import date, timedelta
 from importlib import metadata
-import uuid
 from itertools import groupby
 from pathlib import Path
+from typing import ClassVar, TypeAlias, cast, override
 
-from dotenv import find_dotenv, load_dotenv
 import httpx
+from dotenv import find_dotenv, load_dotenv
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.coordinate import Coordinate
+from textual.timer import Timer  # used for cast of debounce handles
 from textual.widgets import DataTable, Footer as TextualFooter, Static
 from textual.widgets._footer import FooterKey, FooterLabel, KeyGroup
 
@@ -58,16 +60,16 @@ def _get_config_dir() -> Path:
 # Load .env from XDG config directory, falling back to cwd for development
 _config_env = _get_config_dir() / ".env"
 if _config_env.exists():
-    load_dotenv(_config_env)
+    _ = load_dotenv(_config_env)
 else:
-    load_dotenv(find_dotenv(usecwd=True))
+    _ = load_dotenv(find_dotenv(usecwd=True))
 
 
 def _load_hidden_review_requests() -> set[tuple[str, int]]:
     """Load hidden review requests from HIDDEN_REVIEW_REQUESTS env var (JSON array of [repo, pr_number])."""
     raw = os.environ.get("HIDDEN_REVIEW_REQUESTS", "[]")
     try:
-        items: list[list[str | int]] = json.loads(raw)
+        items = cast(list[list[str | int]], json.loads(raw))
         return {(str(repo), int(pr_num)) for repo, pr_num in items}
     except (json.JSONDecodeError, ValueError, TypeError):
         return set()
@@ -86,7 +88,7 @@ def _load_blocked_review_teams() -> set[str]:
     """Load blocked teams from BLOCKED_REVIEW_TEAMS env var (JSON array of team slugs)."""
     raw = os.environ.get("BLOCKED_REVIEW_TEAMS", "[]")
     try:
-        teams: list[str] = json.loads(raw)
+        teams = cast(list[str], json.loads(raw))
         return {str(team) for team in teams}
     except (json.JSONDecodeError, ValueError, TypeError):
         return set()
@@ -161,25 +163,30 @@ def _version_tuple(v: str) -> tuple[int, ...]:
     return tuple(int(x) for x in v.split(".") if x.isdigit())
 
 
+_BindingInfo: TypeAlias = tuple[Binding, bool, str | None]
+
+
 class Footer(TextualFooter):
     """Custom Footer that shows global bindings before pane-specific ones."""
 
-    def compose(self):
+    @override
+    def compose(self) -> ComposeResult:
         if not self._bindings_ready:
             return
+        app = cast(App[object], self.app)
         active_bindings = self.screen.active_bindings
 
-        def sort_key(item):
+        def sort_key(item: tuple[str, tuple[object, Binding, bool, str | None]]) -> int:
             node = item[1][0]
             return 0 if isinstance(node, StatusDashboard) else 1
 
         sorted_items = sorted(active_bindings.items(), key=sort_key)
-        bindings = [
+        bindings: list[_BindingInfo] = [
             (binding, enabled, tooltip)
             for (_, binding, enabled, tooltip) in (v for _, v in sorted_items)
             if binding.show
         ]
-        action_to_bindings: defaultdict[str, list[tuple]] = defaultdict(list)
+        action_to_bindings: defaultdict[str, list[_BindingInfo]] = defaultdict(list)
         for binding, enabled, tooltip in bindings:
             action_to_bindings[binding.action].append((binding, enabled, tooltip))
 
@@ -191,14 +198,14 @@ class Footer(TextualFooter):
             action_to_bindings.values(),
             lambda multi_bindings_: multi_bindings_[0][0].group,
         ):
-            multi_bindings = list(multi_bindings_iterable)
-            if group is not None and len(multi_bindings) > 1:
+            multi_bindings_list = list(multi_bindings_iterable)
+            if group is not None and len(multi_bindings_list) > 1:
                 with KeyGroup(classes="-compact" if group.compact else ""):
-                    for multi_bindings in multi_bindings:
+                    for multi_bindings in multi_bindings_list:
                         binding, enabled, tooltip = multi_bindings[0]
                         yield FooterKey(
                             binding.key,
-                            self.app.get_key_display(binding),
+                            app.get_key_display(binding),
                             "",
                             binding.action,
                             disabled=not enabled,
@@ -207,27 +214,27 @@ class Footer(TextualFooter):
                         ).data_bind(compact=TextualFooter.compact)
                 yield FooterLabel(group.description)
             else:
-                for multi_bindings in multi_bindings:
+                for multi_bindings in multi_bindings_list:
                     binding, enabled, tooltip = multi_bindings[0]
                     yield FooterKey(
                         binding.key,
-                        self.app.get_key_display(binding),
+                        app.get_key_display(binding),
                         binding.description,
                         binding.action,
                         disabled=not enabled,
-                        tooltip=tooltip,
+                        tooltip=tooltip or binding.description,
                     ).data_bind(compact=TextualFooter.compact)
-        if self.show_command_palette and self.app.ENABLE_COMMAND_PALETTE:
+        if self.show_command_palette and app.ENABLE_COMMAND_PALETTE:
             try:
                 _node, binding, enabled, tooltip = active_bindings[
-                    self.app.COMMAND_PALETTE_BINDING
+                    app.COMMAND_PALETTE_BINDING
                 ]
             except KeyError:
                 pass
             else:
                 yield FooterKey(
                     binding.key,
-                    self.app.get_key_display(binding),
+                    app.get_key_display(binding),
                     binding.description,
                     binding.action,
                     classes="-command-palette",
@@ -236,15 +243,17 @@ class Footer(TextualFooter):
                 )
 
 
-class VimDataTable(DataTable):
+class VimDataTable(DataTable[str | Text]):
     """DataTable with vim-style navigation (j/k/g/G) and count prefixes (e.g., 5j)."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("g", "cursor_top", "Top", show=False),
         Binding("G", "cursor_bottom", "Bottom", show=False),
     ]
 
-    def __init__(self, *args, **kwargs):
+    _vim_count: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)
         self._vim_count = ""
 
@@ -257,8 +266,8 @@ class VimDataTable(DataTable):
         count = self._get_and_reset_count()
         for _ in range(count):
             # If at bottom row, move to next panel
-            if self.cursor_row is not None and self.cursor_row >= self.row_count - 1:
-                self.app.action_focus_next()
+            if self.cursor_row >= self.row_count - 1:
+                cast(App[None], self.app).action_focus_next()
                 return
             self.action_cursor_down()
 
@@ -266,8 +275,8 @@ class VimDataTable(DataTable):
         count = self._get_and_reset_count()
         for _ in range(count):
             # If at top row, move to previous panel
-            if self.cursor_row is not None and self.cursor_row <= 0:
-                self.app.action_focus_previous()
+            if self.cursor_row <= 0:
+                cast(App[None], self.app).action_focus_previous()
                 return
             self.action_cursor_up()
 
@@ -314,6 +323,7 @@ class VimDataTable(DataTable):
         if self.row_count > 0:
             self.move_cursor(row=self.row_count - 1)
 
+    @override
     def watch_cursor_coordinate(
         self, old_coordinate: Coordinate, new_coordinate: Coordinate
     ) -> None:
@@ -336,7 +346,7 @@ class VimDataTable(DataTable):
 class ReviewRequestsDataTable(VimDataTable):
     """DataTable for review requests with remove reviewer binding."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("x", "remove_self_as_reviewer", "Remove Self"),
         Binding("c", "app.copy_pr_link", "Copy Link"),
     ]
@@ -345,7 +355,7 @@ class ReviewRequestsDataTable(VimDataTable):
 class NotificationsDataTable(VimDataTable):
     """DataTable for GitHub notifications with mark as read binding."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("x", "app.mark_notification_read", "Mark Read"),
         Binding("c", "app.copy_pr_link", "Copy Link"),
     ]
@@ -354,7 +364,7 @@ class NotificationsDataTable(VimDataTable):
 class MyPRsDataTable(VimDataTable):
     """DataTable for user's PRs with merge and close bindings."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("m", "app.merge_pr", "Merge"),
         Binding("x", "app.close_pr", "Close"),
         Binding("c", "app.copy_pr_link", "Copy Link"),
@@ -364,7 +374,7 @@ class MyPRsDataTable(VimDataTable):
 class TodoistDataTable(VimDataTable):
     """DataTable for Todoist tasks with defer binding."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("T", "app.reschedule_overdue_to_today", "Reschedule All"),
         Binding("a", "app.create_todoist_task", "Add Task"),
         Binding("e", "app.edit_todoist_task", "Edit"),
@@ -387,7 +397,7 @@ class TodoistDataTable(VimDataTable):
 class LinearDataTable(VimDataTable):
     """DataTable for Linear issues with state change bindings."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("i", "app.create_linear_issue", "New Issue"),
         Binding("a", "app.assign_self_linear", "Assign Self"),
         Binding("u", "app.unassign_linear", "Unassign"),
@@ -407,7 +417,7 @@ class LinearDataTable(VimDataTable):
 class GoalsDataTable(VimDataTable):
     """DataTable for weekly goals."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("a", "app.create_goal", "Add Goal"),
         Binding("c", "app.complete_goal", "Complete"),
         Binding("x", "app.abandon_goal", "Abandon"),
@@ -423,7 +433,7 @@ class GoalsDataTable(VimDataTable):
 class UpdateBanner(Static):
     """Banner showing when a new version is available."""
 
-    DEFAULT_CSS = """
+    DEFAULT_CSS: ClassVar[str] = """
     UpdateBanner {
         background: $warning;
         color: $text;
@@ -437,8 +447,8 @@ class UpdateBanner(Static):
     }
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # pyright: ignore[reportArgumentType]
         self._new_version: str | None = None
 
     def show_update(self, new_version: str) -> None:
@@ -453,13 +463,17 @@ class UpdateBanner(Static):
 class Panel(Container):
     """A panel with a title and data table."""
 
+    panel_title: str
+    table_class: type[VimDataTable]
+
     def __init__(
-        self, title: str, panel_id: str, table_class: type[DataTable] = VimDataTable
+        self, title: str, panel_id: str, table_class: type[VimDataTable] = VimDataTable
     ):
         super().__init__(id=panel_id)
         self.panel_title = title
         self.table_class = table_class
 
+    @override
     def compose(self) -> ComposeResult:
         yield Static(self.panel_title, classes="panel-title")
         yield self.table_class(id=f"{self.id}-table")
@@ -475,18 +489,10 @@ def _short_repo(repo: str) -> str:
     return repo[:11]
 
 
-class StatusDashboard(App):
+class StatusDashboard(App[None]):
     """Terminal dashboard for PRs, Todoist, and Linear."""
 
-    _goals: list[goals_db.Goal] = []  # pyright: ignore[reportUninitializedInstanceVariable]
-    _goals_showing_review: bool = False  # pyright: ignore[reportUninitializedInstanceVariable]
-    _goals_review_dismissed: bool = False  # pyright: ignore[reportUninitializedInstanceVariable]
-    _goals_week_metrics: goals_db.WeekMetrics | None = None  # pyright: ignore[reportUninitializedInstanceVariable]
-    _gh_notifications: list[github.Notification] = []  # pyright: ignore[reportUninitializedInstanceVariable]
-    _review_requests: list[github.ReviewRequest] = []  # pyright: ignore[reportUninitializedInstanceVariable]
-    _linear_viewer_initials: str | None = None  # pyright: ignore[reportUninitializedInstanceVariable]
-
-    CSS = """
+    CSS: ClassVar[str] = """
     Screen {
         layout: vertical;
     }
@@ -549,7 +555,7 @@ class StatusDashboard(App):
 
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("r", "refresh", "Refresh"),
         Binding("z", "undo", "Undo"),
         Binding("R", "restart", "Restart"),
@@ -558,6 +564,27 @@ class StatusDashboard(App):
         Binding("ctrl+shift+down", "focus_next_pane", "Next Pane", show=False),
     ]
 
+    _undo_stack: UndoStack  # pyright: ignore[reportUninitializedInstanceVariable]
+    _my_prs: list[github.PullRequest]  # pyright: ignore[reportUninitializedInstanceVariable]
+    _review_requests: list[github.ReviewRequest]  # pyright: ignore[reportUninitializedInstanceVariable]
+    _todoist_tasks: list[todoist.Task]  # pyright: ignore[reportUninitializedInstanceVariable]
+    _todoist_pending_orders: dict[str, int] | None  # pyright: ignore[reportUninitializedInstanceVariable]
+    _todoist_debounce_handle: Timer | None  # pyright: ignore[reportUninitializedInstanceVariable]
+    _todoist_restore_key: str | None  # pyright: ignore[reportUninitializedInstanceVariable]
+    _todoist_selected_date: date  # pyright: ignore[reportUninitializedInstanceVariable]
+    _todoist_optimistic_tasks: dict[str, todoist.Task]  # pyright: ignore[reportUninitializedInstanceVariable]
+    _linear_issues: list[linear.Issue]  # pyright: ignore[reportUninitializedInstanceVariable]
+    _linear_debounce_handle: Timer | None  # pyright: ignore[reportUninitializedInstanceVariable]
+    _linear_viewer_initials: str | None  # pyright: ignore[reportUninitializedInstanceVariable]
+    _gh_notifications: list[github.Notification]  # pyright: ignore[reportUninitializedInstanceVariable]
+    _goals: list[goals_db.Goal]  # pyright: ignore[reportUninitializedInstanceVariable]
+    _goals_showing_review: bool  # pyright: ignore[reportUninitializedInstanceVariable]
+    _goals_review_dismissed: bool  # pyright: ignore[reportUninitializedInstanceVariable]
+    _goals_week_metrics: goals_db.WeekMetrics | None  # pyright: ignore[reportUninitializedInstanceVariable]
+    _linear_team_id: str  # pyright: ignore[reportUninitializedInstanceVariable]
+    _linear_pending_move: tuple[str, float, int] | None  # pyright: ignore[reportUninitializedInstanceVariable]
+
+    @override
     def compose(self) -> ComposeResult:
         yield UpdateBanner(id="update-banner")
         yield Panel("Weekly Goals", "goals", table_class=GoalsDataTable)
@@ -577,7 +604,7 @@ class StatusDashboard(App):
             yield Panel("Linear", "linear", table_class=LinearDataTable)
         yield Footer()
 
-    def _setup_table(self, table: DataTable) -> None:
+    def _setup_table(self, table: DataTable[str | Text]) -> None:
         """Common table setup."""
         table.cursor_type = "row"
         table.show_cursor = True
@@ -585,46 +612,48 @@ class StatusDashboard(App):
 
     def on_mount(self) -> None:
         self._undo_stack = UndoStack()
-        self._my_prs: list[github.PullRequest] = []
-        self._review_requests: list[github.ReviewRequest] = []
-        self._todoist_tasks: list[todoist.Task] = []
-        self._todoist_pending_orders: dict[str, int] | None = None
-        self._todoist_debounce_handle: object | None = None
-        self._todoist_restore_key: str | None = None
-        self._todoist_selected_date: date = date.today()
-        self._todoist_optimistic_tasks: dict[str, todoist.Task] = {}
-        self._linear_issues: list[linear.Issue] = []
-        self._linear_debounce_handle: object | None = None
-        self._linear_viewer_initials: str | None = None
-        self._gh_notifications: list[github.Notification] = []
-        self._goals: list[goals_db.Goal] = []
-        self._goals_showing_review: bool = False
-        self._goals_review_dismissed: bool = False
-        self._goals_week_metrics: goals_db.WeekMetrics | None = None
+        self._my_prs = []
+        self._review_requests = []
+        self._todoist_tasks = []
+        self._todoist_pending_orders = None
+        self._todoist_debounce_handle = None
+        self._todoist_restore_key = None
+        self._todoist_selected_date = date.today()
+        self._todoist_optimistic_tasks = {}
+        self._linear_issues = []
+        self._linear_debounce_handle = None
+        self._linear_viewer_initials = None
+        self._gh_notifications = []
+        self._goals = []
+        self._goals_showing_review = False
+        self._goals_review_dismissed = False
+        self._goals_week_metrics = None
+        self._linear_team_id = ""
+        self._linear_pending_move = None
 
         # Set up goals table
-        goals_table = self.query_one("#goals-table", DataTable)
+        goals_table = self.query_one("#goals-table", GoalsDataTable)
         _ = goals_table.add_columns("#", "", "Goal")
         self._setup_table(goals_table)
 
         # Set up table columns - auto-sized based on content
-        my_prs = self.query_one("#my-prs-table", DataTable)
+        my_prs = self.query_one("#my-prs-table", MyPRsDataTable)
         _ = my_prs.add_columns("#", "PR", "Title", "Repo", "Status", "CI", "Cmt")
         self._setup_table(my_prs)
 
-        reviews = self.query_one("#review-requests-table", DataTable)
+        reviews = self.query_one("#review-requests-table", ReviewRequestsDataTable)
         _ = reviews.add_columns("#", "PR", "Title", "Repo", "Author", "Age", "Reviewed")
         self._setup_table(reviews)
 
-        notifs = self.query_one("#notifications-table", DataTable)
+        notifs = self.query_one("#notifications-table", NotificationsDataTable)
         _ = notifs.add_columns("#", "PR", "Title", "Repo", "Reason", "Age")
         self._setup_table(notifs)
 
-        todo = self.query_one("#todoist-table", DataTable)
+        todo = self.query_one("#todoist-table", TodoistDataTable)
         _ = todo.add_columns("#", "!", "", "Time", "#C", "🔗", "Task")
         self._setup_table(todo)
 
-        lin = self.query_one("#linear-table", DataTable)
+        lin = self.query_one("#linear-table", LinearDataTable)
         _ = lin.add_columns("#", "ID", "Title", "Status", "Owner")
         self._setup_table(lin)
 
@@ -634,11 +663,11 @@ class StatusDashboard(App):
 
     def refresh_all(self) -> None:
         self._refresh_goals()
-        self._refresh_my_prs()
-        self._refresh_review_requests()
-        self._refresh_gh_notifications()
-        self._refresh_todoist()
-        self._refresh_linear()
+        _ = self._refresh_my_prs()
+        _ = self._refresh_review_requests()
+        _ = self._refresh_gh_notifications()
+        _ = self._refresh_todoist()
+        _ = self._refresh_linear()
 
     @work(exclusive=False)
     async def _check_for_updates(self) -> None:
@@ -746,7 +775,7 @@ class StatusDashboard(App):
             # Build title with computed totals
             title = "Weekly Goals"
             if total_h2 > 0 or total_pred > 0:
-                estimates = []
+                estimates: list[str] = []
                 if total_h2 > 0:
                     estimates.append(f"Est: {total_h2:.1f}h")
                 if total_pred > 0:
@@ -800,13 +829,13 @@ class StatusDashboard(App):
         self._render_my_prs_table()
 
     def _render_my_prs_table(self, preserve_cursor: bool = True) -> None:
-        table: DataTable = self.query_one("#my-prs-table", DataTable)
+        table = self.query_one("#my-prs-table", MyPRsDataTable)
         selected_key = self._get_selected_row_key(table) if preserve_cursor else None
 
-        table.clear()
+        _ = table.clear()
 
         if not self._my_prs:
-            table.add_row(
+            _ = table.add_row(
                 "", "", Text("No open PRs", style="dim italic"), "", "", "", ""
             )
         else:
@@ -827,7 +856,7 @@ class StatusDashboard(App):
                     "FAILURE": "fail",
                     "PENDING": "...",
                     "EXPECTED": "...",
-                }.get(pr.ci_status, "")
+                }.get(pr.ci_status or "", "")
 
                 comment_display = (
                     str(pr.unresolved_comment_count)
@@ -837,7 +866,7 @@ class StatusDashboard(App):
 
                 repo = _short_repo(pr.repository)
                 title = pr.title[:40] + "…" if len(pr.title) > 40 else pr.title
-                table.add_row(
+                _ = table.add_row(
                     "",
                     f"#{pr.number}",
                     title,
@@ -859,10 +888,10 @@ class StatusDashboard(App):
         self._render_review_requests_table()
 
     def _render_review_requests_table(self, preserve_cursor: bool = True) -> None:
-        table: DataTable = self.query_one("#review-requests-table", DataTable)
+        table = self.query_one("#review-requests-table", ReviewRequestsDataTable)
         selected_key = self._get_selected_row_key(table) if preserve_cursor else None
 
-        table.clear()
+        _ = table.clear()
 
         def _is_visible(pr: github.ReviewRequest) -> bool:
             if (pr.repository, pr.number) in HIDDEN_REVIEW_REQUESTS:
@@ -877,13 +906,13 @@ class StatusDashboard(App):
         visible_prs = [pr for pr in self._review_requests if _is_visible(pr)]
 
         if not visible_prs:
-            table.add_row(
+            _ = table.add_row(
                 "", "", Text("No review requests", style="dim italic"), "", "", "", ""
             )
         else:
             for pr in visible_prs:
                 repo = _short_repo(pr.repository)
-                age = github._relative_time(pr.created_at)
+                age = github._relative_time(pr.created_at)  # pyright: ignore[reportPrivateUsage]
                 title = pr.title[:40] + "…" if len(pr.title) > 40 else pr.title
                 reviewed = "✓" if pr.has_other_review else ""
                 _ = table.add_row(
@@ -911,19 +940,19 @@ class StatusDashboard(App):
         table = self.query_one("#notifications-table", NotificationsDataTable)
         selected_key = self._get_selected_row_key(table) if preserve_cursor else None
 
-        table.clear()
+        _ = table.clear()
 
         if not self._gh_notifications:
-            table.add_row(
+            _ = table.add_row(
                 "", "", Text("No notifications", style="dim italic"), "", "", ""
             )
         else:
             for notif in self._gh_notifications:
                 repo = _short_repo(notif.repository)
-                age = github._relative_time(notif.updated_at)
+                age = github._relative_time(notif.updated_at)  # pyright: ignore[reportPrivateUsage]
                 pr_display = f"#{notif.pr_number}" if notif.pr_number else ""
                 title = notif.title[:40] + "…" if len(notif.title) > 40 else notif.title
-                table.add_row(
+                _ = table.add_row(
                     "",
                     pr_display,
                     title,
@@ -937,23 +966,25 @@ class StatusDashboard(App):
                 self._restore_cursor_by_key(table, selected_key)
         table.refresh_line_numbers()
 
-    def _get_selected_row_key(self, table: DataTable) -> str | None:
-        if table.cursor_row is None or table.row_count == 0:
+    def _get_selected_row_key(self, table: DataTable[str | Text]) -> str | None:
+        if table.row_count == 0:
             return None
         cell_key = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0))
         if cell_key.row_key and cell_key.row_key.value:
             return str(cell_key.row_key.value)
         return None
 
-    def _get_row_key_above(self, table: DataTable) -> str | None:
-        if table.cursor_row is None or table.cursor_row == 0 or table.row_count == 0:
+    def _get_row_key_above(self, table: DataTable[str | Text]) -> str | None:
+        if table.cursor_row == 0 or table.row_count == 0:
             return None
         cell_key = table.coordinate_to_cell_key(Coordinate(table.cursor_row - 1, 0))
         if cell_key.row_key and cell_key.row_key.value:
             return str(cell_key.row_key.value)
         return None
 
-    def _restore_cursor_by_key(self, table: DataTable, row_key: str | None) -> None:
+    def _restore_cursor_by_key(
+        self, table: DataTable[str | Text], row_key: str | None
+    ) -> None:
         if not row_key or table.row_count == 0:
             return
         for idx in range(table.row_count):
@@ -984,7 +1015,7 @@ class StatusDashboard(App):
 
     def action_todoist_previous_day(self) -> None:
         focused = self.focused
-        if not isinstance(focused, DataTable) or focused.id != "todoist-table":
+        if not isinstance(focused, VimDataTable) or focused.id != "todoist-table":
             return
         today = date.today()
         if self._todoist_selected_date <= today:
@@ -992,18 +1023,18 @@ class StatusDashboard(App):
             return
         self._todoist_selected_date -= timedelta(days=1)
         self._update_todoist_panel_title()
-        self._refresh_todoist()
+        _ = self._refresh_todoist()
 
     def action_todoist_next_day(self) -> None:
         focused = self.focused
-        if not isinstance(focused, DataTable) or focused.id != "todoist-table":
+        if not isinstance(focused, VimDataTable) or focused.id != "todoist-table":
             return
         self._todoist_selected_date += timedelta(days=1)
         self._update_todoist_panel_title()
-        self._refresh_todoist()
+        _ = self._refresh_todoist()
 
     def _render_todoist_table(self, preserve_cursor: bool = True) -> None:
-        table: DataTable = self.query_one("#todoist-table", DataTable)
+        table = self.query_one("#todoist-table", TodoistDataTable)
         if self._todoist_restore_key:
             selected_key = self._todoist_restore_key
             self._todoist_restore_key = None
@@ -1012,7 +1043,7 @@ class StatusDashboard(App):
         else:
             selected_key = None
 
-        table.clear()
+        _ = table.clear()
 
         today = date.today()
         selected = self._todoist_selected_date
@@ -1067,19 +1098,21 @@ class StatusDashboard(App):
         self._render_linear_table()
 
     def _render_linear_table(self, preserve_cursor: bool = True) -> None:
-        table: DataTable = self.query_one("#linear-table", DataTable)
+        table = self.query_one("#linear-table", LinearDataTable)
         selected_key = self._get_selected_row_key(table) if preserve_cursor else None
 
-        table.clear()
+        _ = table.clear()
 
         if not self._linear_issues:
-            table.add_row("", "", Text("No active issues", style="dim italic"), "", "")
+            _ = table.add_row(
+                "", "", Text("No active issues", style="dim italic"), "", ""
+            )
         else:
             for issue in self._linear_issues:
                 assignee = issue.assignee_initials or ""
                 title = issue.title[:50] + "…" if len(issue.title) > 50 else issue.title
                 state_display = LINEAR_STATE_SHORT.get(issue.state, issue.state)
-                table.add_row(
+                _ = table.add_row(
                     "",
                     issue.identifier,
                     title,
@@ -1097,33 +1130,33 @@ class StatusDashboard(App):
         self.notify("Refreshing...")
 
     def action_restart(self) -> None:
-        self._do_upgrade_and_restart()
+        _ = self._do_upgrade_and_restart()
 
     def action_focus_previous_pane(self) -> None:
         """Move focus to the previous pane."""
-        tables = list(self.query(DataTable))
+        tables = list(self.query(VimDataTable))
         if not tables:
             return
         focused = self.focused
-        if not isinstance(focused, DataTable) or focused not in tables:
-            tables[-1].focus()
+        if not isinstance(focused, VimDataTable) or focused not in tables:
+            _ = tables[-1].focus()
             return
         current_idx = tables.index(focused)
         prev_idx = (current_idx - 1) % len(tables)
-        tables[prev_idx].focus()
+        _ = tables[prev_idx].focus()
 
     def action_focus_next_pane(self) -> None:
         """Move focus to the next pane."""
-        tables = list(self.query(DataTable))
+        tables = list(self.query(VimDataTable))
         if not tables:
             return
         focused = self.focused
-        if not isinstance(focused, DataTable) or focused not in tables:
-            tables[0].focus()
+        if not isinstance(focused, VimDataTable) or focused not in tables:
+            _ = tables[0].focus()
             return
         current_idx = tables.index(focused)
         next_idx = (current_idx + 1) % len(tables)
-        tables[next_idx].focus()
+        _ = tables[next_idx].focus()
 
     def _is_uv_tool(self) -> bool:
         """Check if this app is installed as a uv tool."""
@@ -1187,7 +1220,7 @@ class StatusDashboard(App):
         if action is None:
             return
 
-        self._execute_undo(action)
+        _ = self._execute_undo(action)
 
     @work(exclusive=False)
     async def _execute_undo(
@@ -1198,7 +1231,8 @@ class StatusDashboard(App):
         | LinearSetStateAction
         | LinearAssignAction
         | LinearMoveAction
-        | GoalCompleteAction,
+        | GoalCompleteAction
+        | GoalAbandonAction,
     ) -> None:
         """Execute the undo operation for a given action."""
         success = False
@@ -1206,21 +1240,21 @@ class StatusDashboard(App):
         if isinstance(action, TodoistCompleteAction):
             success = await asyncio.to_thread(todoist.reopen_task, action.task_id)
             if success:
-                self._refresh_todoist()
+                _ = self._refresh_todoist()
 
         elif isinstance(action, TodoistDeferAction):
             success = await asyncio.to_thread(
                 todoist.set_due_date, action.task_id, action.original_due_date
             )
             if success:
-                self._refresh_todoist()
+                _ = self._refresh_todoist()
 
         elif isinstance(action, TodoistMoveAction):
             success = await asyncio.to_thread(
                 todoist.update_day_orders, action.ids_to_orders
             )
             if success:
-                self._refresh_todoist()
+                _ = self._refresh_todoist()
 
         elif isinstance(action, LinearSetStateAction):
             success = await asyncio.to_thread(
@@ -1230,28 +1264,28 @@ class StatusDashboard(App):
                 action.previous_state,
             )
             if success:
-                self._refresh_linear()
+                _ = self._refresh_linear()
 
         elif isinstance(action, LinearAssignAction):
             success = await asyncio.to_thread(
                 linear.assign_issue, action.issue_id, action.previous_assignee_id
             )
             if success:
-                self._refresh_linear()
+                _ = self._refresh_linear()
 
         elif isinstance(action, LinearMoveAction):
             success = await asyncio.to_thread(
                 linear.update_sort_order, action.issue_id, action.previous_sort_order
             )
             if success:
-                self._refresh_linear()
+                _ = self._refresh_linear()
 
         elif isinstance(action, GoalCompleteAction):
             success = goals_db.uncomplete_goal(action.goal_id)
             if success:
                 self._refresh_goals()
 
-        elif isinstance(action, GoalAbandonAction):
+        else:
             success = goals_db.unabandon_goal(action.goal_id)
             if success:
                 self._refresh_goals()
@@ -1289,15 +1323,15 @@ class StatusDashboard(App):
             url = key
 
         if url:
-            webbrowser.open(url)
+            _ = webbrowser.open(url)
 
     def action_complete_task(self) -> None:
         """Complete the selected Todoist task or Linear issue."""
         focused = self.focused
-        if not isinstance(focused, DataTable):
+        if not isinstance(focused, VimDataTable):
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
@@ -1336,15 +1370,15 @@ class StatusDashboard(App):
             if len(parts) >= 3:
                 issue_id = parts[1]
                 team_id = parts[2]
-                self._do_complete_linear_issue(issue_id, team_id)
+                _ = self._do_complete_linear_issue(issue_id, team_id)
         else:
             self.notify(
                 "Can only complete Todoist tasks or Linear issues", severity="warning"
             )
 
-    def _get_row_content(self, table: DataTable) -> str:
+    def _get_row_content(self, table: DataTable[str | Text]) -> str:
         """Get the content/title column text from the current row."""
-        if table.cursor_row is None or table.row_count == 0:
+        if table.row_count == 0:
             return ""
         try:
             row_data = table.get_row_at(table.cursor_row)
@@ -1383,14 +1417,14 @@ class StatusDashboard(App):
     def action_defer_task(self) -> None:
         """Defer the selected Todoist task to the next working day."""
         focused = self.focused
-        if not isinstance(focused, DataTable):
+        if not isinstance(focused, VimDataTable):
             return
 
         if focused.id != "todoist-table":
             self.notify("Can only defer Todoist tasks", severity="warning")
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
@@ -1435,8 +1469,10 @@ class StatusDashboard(App):
         removed_index: int,
     ) -> None:
         task = await asyncio.to_thread(todoist.get_task, task_id)
-        original_due = (
-            task.get("due", {}).get("date") if task and task.get("due") else None
+        due_raw = task.get("due") if task else None
+        original_due = cast(
+            str | None,
+            cast(dict[str, object], due_raw).get("date") if due_raw else None,
         )
 
         success = await asyncio.to_thread(todoist.defer_task, task_id)
@@ -1460,14 +1496,14 @@ class StatusDashboard(App):
     def action_delete_task(self) -> None:
         """Delete the selected Todoist task."""
         focused = self.focused
-        if not isinstance(focused, DataTable):
+        if not isinstance(focused, VimDataTable):
             return
 
         if focused.id != "todoist-table":
             self.notify("Can only delete Todoist tasks", severity="warning")
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
@@ -1544,14 +1580,14 @@ class StatusDashboard(App):
     def _move_todoist_task(self, direction: int) -> None:
         """Move the selected Todoist task up (-1) or down (+1) with optimistic UI update."""
         focused = self.focused
-        if not isinstance(focused, DataTable):
+        if not isinstance(focused, VimDataTable):
             return
 
         if focused.id != "todoist-table":
             self.notify("Can only move Todoist tasks", severity="warning")
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         current_row = focused.cursor_row
@@ -1567,8 +1603,8 @@ class StatusDashboard(App):
 
         self._render_todoist_table(preserve_cursor=False)
         focused.move_cursor(row=target_row)
-        row_region = focused._get_row_region(target_row)
-        focused.scroll_to_region(row_region, center=True, animate=False)
+        row_region = focused._get_row_region(target_row)  # pyright: ignore[reportPrivateUsage]
+        _ = focused.scroll_to_region(row_region, center=True, animate=False)
 
         self._schedule_todoist_sync()
 
@@ -1596,12 +1632,12 @@ class StatusDashboard(App):
         success = await asyncio.to_thread(todoist.update_day_orders, new_orders)
         if not success:
             self.notify("Failed to save task order", severity="error")
-            self._refresh_todoist()
+            _ = self._refresh_todoist()
 
     def action_reschedule_overdue_to_today(self) -> None:
         """Reschedule all overdue Todoist tasks to today."""
         focused = self.focused
-        if not isinstance(focused, DataTable):
+        if not isinstance(focused, VimDataTable):
             return
 
         if focused.id != "todoist-table":
@@ -1617,7 +1653,7 @@ class StatusDashboard(App):
             self.notify("No overdue tasks to reschedule")
             return
 
-        self._do_reschedule_overdue_to_today(overdue_tasks)
+        _ = self._do_reschedule_overdue_to_today(overdue_tasks)
 
     @work(exclusive=False)
     async def _do_reschedule_overdue_to_today(self, tasks: list[todoist.Task]) -> None:
@@ -1636,19 +1672,19 @@ class StatusDashboard(App):
         else:
             self.notify("Failed to reschedule tasks", severity="error")
 
-        self._refresh_todoist()
+        _ = self._refresh_todoist()
 
     def action_open_task_link(self) -> None:
         """Open the first link found in the selected Todoist task's description."""
         focused = self.focused
-        if not isinstance(focused, DataTable):
+        if not isinstance(focused, VimDataTable):
             return
 
         if focused.id != "todoist-table":
             self.notify("Can only open links from Todoist tasks", severity="warning")
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
@@ -1663,7 +1699,7 @@ class StatusDashboard(App):
         parts = key.split(":", 2)
         if len(parts) >= 2:
             task_id = parts[1]
-            self._do_open_task_link(task_id)
+            _ = self._do_open_task_link(task_id)
 
     def _extract_url(self, text: str) -> str | None:
         """Extract a URL from text, handling Markdown links like [text](url)."""
@@ -1683,16 +1719,16 @@ class StatusDashboard(App):
             self.notify("Failed to fetch task", severity="error")
             return
 
-        content = task.get("content", "")
+        content = cast(str, task.get("content", ""))
         url = self._extract_url(content)
         if url:
-            webbrowser.open(url)
+            _ = webbrowser.open(url)
             return
 
-        description = task.get("description", "")
+        description = cast(str, task.get("description", ""))
         url = self._extract_url(description)
         if url:
-            webbrowser.open(url)
+            _ = webbrowser.open(url)
             return
 
         self.notify("No link found in task", severity="warning")
@@ -1702,21 +1738,21 @@ class StatusDashboard(App):
         success = await asyncio.to_thread(linear.complete_issue, issue_id, team_id)
         if success:
             self.notify("Issue marked as Done!")
-            self._refresh_linear()
+            _ = self._refresh_linear()
         else:
             self.notify("Failed to complete issue", severity="error")
 
     def action_set_linear_state(self, state: str) -> None:
         """Set the selected Linear issue's state."""
         focused = self.focused
-        if not isinstance(focused, DataTable):
+        if not isinstance(focused, VimDataTable):
             return
 
         if focused.id != "linear-table":
             self.notify("Can only change state on Linear issues", severity="warning")
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
@@ -1774,9 +1810,9 @@ class StatusDashboard(App):
                 removed_index,
             )
 
-    def _get_row_identifier(self, table: DataTable) -> str:
+    def _get_row_identifier(self, table: DataTable[str | Text]) -> str:
         """Get the identifier (second column, after line numbers) from the current row."""
-        if table.cursor_row is None or table.row_count == 0:
+        if table.row_count == 0:
             return ""
         try:
             row_data = table.get_row_at(table.cursor_row)
@@ -1827,10 +1863,10 @@ class StatusDashboard(App):
 
     def _get_selected_linear_issue_id(self) -> str | None:
         focused = self.focused
-        if not isinstance(focused, DataTable) or focused.id != "linear-table":
+        if not isinstance(focused, VimDataTable) or focused.id != "linear-table":
             return None
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return None
 
         cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
@@ -1846,7 +1882,7 @@ class StatusDashboard(App):
 
     def action_assign_self_linear(self) -> None:
         focused = self.focused
-        if not isinstance(focused, DataTable) or focused.id != "linear-table":
+        if not isinstance(focused, VimDataTable) or focused.id != "linear-table":
             self.notify("Select a Linear issue first", severity="warning")
             return
         issue_id = self._get_selected_linear_issue_id()
@@ -1874,7 +1910,7 @@ class StatusDashboard(App):
 
     def action_unassign_linear(self) -> None:
         focused = self.focused
-        if not isinstance(focused, DataTable) or focused.id != "linear-table":
+        if not isinstance(focused, VimDataTable) or focused.id != "linear-table":
             self.notify("Select a Linear issue first", severity="warning")
             return
         issue_id = self._get_selected_linear_issue_id()
@@ -1908,10 +1944,10 @@ class StatusDashboard(App):
         original_initials: str | None,
     ) -> None:
         issue = await asyncio.to_thread(linear.get_issue, issue_id)
-        previous_assignee_id = (
-            issue.get("assignee", {}).get("id")
-            if issue and issue.get("assignee")
-            else None
+        assignee_raw = issue.get("assignee") if issue else None
+        previous_assignee_id = cast(
+            str | None,
+            cast(dict[str, object], assignee_raw).get("id") if assignee_raw else None,
         )
 
         if assign:
@@ -1934,7 +1970,7 @@ class StatusDashboard(App):
                     if member.get("id") == viewer_id:
                         name = member.get("displayName") or member.get("name")
                         if name:
-                            self._linear_viewer_initials = linear._get_initials(name)
+                            self._linear_viewer_initials = linear.get_initials(name)
                             # Update the optimistic placeholder with real initials
                             for i in self._linear_issues:
                                 if i.id == issue_id and i.assignee_initials == "...":
@@ -1969,14 +2005,14 @@ class StatusDashboard(App):
     def action_remove_self_as_reviewer(self) -> None:
         """Remove yourself as a reviewer from the selected PR."""
         focused = self.focused
-        if not isinstance(focused, DataTable):
+        if not isinstance(focused, VimDataTable):
             return
 
         if focused.id != "review-requests-table":
             self.notify("Can only remove self from review requests", severity="warning")
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
@@ -2045,14 +2081,14 @@ class StatusDashboard(App):
     def action_merge_pr(self) -> None:
         """Squash merge the selected approved PR."""
         focused = self.focused
-        if not isinstance(focused, DataTable):
+        if not isinstance(focused, VimDataTable):
             return
 
         if focused.id != "my-prs-table":
             self.notify("Can only merge from My PRs", severity="warning")
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
@@ -2105,14 +2141,14 @@ class StatusDashboard(App):
     def action_close_pr(self) -> None:
         """Close the selected PR without merging."""
         focused = self.focused
-        if not isinstance(focused, DataTable):
+        if not isinstance(focused, VimDataTable):
             return
 
         if focused.id != "my-prs-table":
             self.notify("Can only close from My PRs", severity="warning")
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
@@ -2142,7 +2178,7 @@ class StatusDashboard(App):
         def handle_close_confirmation(confirmed: bool) -> None:
             if confirmed:
                 # Optimistic update: remove PR from list immediately
-                if pr_to_close is not None and pr_index >= 0:
+                if pr_index >= 0:
                     _ = self._my_prs.pop(pr_index)
                     self._render_my_prs_table()
                 _ = self._do_close_pr(
@@ -2179,7 +2215,7 @@ class StatusDashboard(App):
     def action_copy_pr_link(self) -> None:
         """Copy the selected PR's URL to the clipboard."""
         focused = self.focused
-        if not isinstance(focused, DataTable):
+        if not isinstance(focused, VimDataTable):
             return
 
         if focused.id not in (
@@ -2190,7 +2226,7 @@ class StatusDashboard(App):
             self.notify("Can only copy links from PR tables", severity="warning")
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
@@ -2214,14 +2250,14 @@ class StatusDashboard(App):
     def action_mark_notification_read(self) -> None:
         """Mark the selected notification as read."""
         focused = self.focused
-        if not isinstance(focused, DataTable):
+        if not isinstance(focused, VimDataTable):
             return
 
         if focused.id != "notifications-table":
             self.notify("Can only mark notifications as read", severity="warning")
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
@@ -2293,7 +2329,7 @@ class StatusDashboard(App):
         def handle_result(result: dict[str, str] | None) -> None:
             self._handle_todoist_task_created(result, insert_position)
 
-        self.push_screen(CreateTodoistTaskModal(), handle_result)
+        _ = self.push_screen(CreateTodoistTaskModal(), handle_result)
 
     def _handle_todoist_task_created(
         self, result: dict[str, str] | None, insert_position: int
@@ -2393,14 +2429,14 @@ class StatusDashboard(App):
                 updated_task = task
                 break
 
-        self._todoist_optimistic_tasks.pop(temp_id, None)
+        _ = self._todoist_optimistic_tasks.pop(temp_id, None)
 
         new_orders: dict[str, int] = {}
         for idx, task in enumerate(self._todoist_tasks):
             if not task.id.startswith("temp-"):
                 new_orders[task.id] = idx
 
-        await asyncio.to_thread(todoist.update_day_orders, new_orders)
+        _ = await asyncio.to_thread(todoist.update_day_orders, new_orders)
 
         # Check cursor position RIGHT BEFORE rendering to avoid race condition
         # where user moves cursor during the API call above
@@ -2415,11 +2451,11 @@ class StatusDashboard(App):
     def action_edit_todoist_task(self) -> None:
         """Show modal to edit the selected Todoist task."""
         focused = self.focused
-        if not isinstance(focused, DataTable) or focused.id != "todoist-table":
+        if not isinstance(focused, VimDataTable) or focused.id != "todoist-table":
             self.notify("Select a Todoist task first", severity="warning")
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
@@ -2445,11 +2481,15 @@ class StatusDashboard(App):
 
         projects = await asyncio.to_thread(todoist.get_projects)
 
-        content = task_data.get("content", "")
-        description = task_data.get("description", "")
-        project_id = task_data.get("project_id")
-        due = task_data.get("due")
-        due_string = due.get("string", "") if due else ""
+        content = cast(str, task_data.get("content", ""))
+        description = cast(str, task_data.get("description", ""))
+        project_id = cast(str | None, task_data.get("project_id"))
+        due_raw = task_data.get("due")
+        due_string = (
+            cast(str, cast(dict[str, object], due_raw).get("string", ""))
+            if due_raw
+            else ""
+        )
 
         project_options = [(p.name, p.id) for p in projects]
 
@@ -2503,11 +2543,11 @@ class StatusDashboard(App):
     def action_open_todoist_in_browser(self) -> None:
         """Open the selected Todoist task in the web app."""
         focused = self.focused
-        if not isinstance(focused, DataTable) or focused.id != "todoist-table":
+        if not isinstance(focused, VimDataTable) or focused.id != "todoist-table":
             self.notify("Select a Todoist task first", severity="warning")
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
@@ -2528,7 +2568,7 @@ class StatusDashboard(App):
     def action_create_linear_issue(self) -> None:
         """Show modal to create a new Linear issue."""
         # First, get team ID and members
-        self._prepare_linear_issue_modal()
+        _ = self._prepare_linear_issue_modal()
 
     @work(exclusive=False)
     async def _prepare_linear_issue_modal(self) -> None:
@@ -2547,24 +2587,24 @@ class StatusDashboard(App):
         self._linear_team_id = team_id
 
         # Show modal
-        self.push_screen(
+        _ = self.push_screen(
             CreateLinearIssueModal(team_members, viewer_id=viewer_id),
             self._handle_linear_issue_created,
         )
 
-    def _handle_linear_issue_created(self, result: dict | None) -> None:
+    def _handle_linear_issue_created(self, result: dict[str, str] | None) -> None:
         """Handle the result from the Linear issue creation modal."""
         if result:
             title = result["title"]
             state = result["state"]
             assignee_id = result.get("assignee_id")
-            self._do_create_linear_issue(title, state, assignee_id)
+            _ = self._do_create_linear_issue(title, state, assignee_id)
 
     @work(exclusive=False)
     async def _do_create_linear_issue(
         self, title: str, state: str, assignee_id: str | None
     ) -> None:
-        team_id = getattr(self, "_linear_team_id", None)
+        team_id = self._linear_team_id
         if not team_id:
             self.notify("Team ID not available", severity="error")
             return
@@ -2574,7 +2614,7 @@ class StatusDashboard(App):
         )
         if success:
             self.notify("Issue created!")
-            self._refresh_linear()
+            _ = self._refresh_linear()
         else:
             self.notify("Failed to create issue", severity="error")
 
@@ -2589,14 +2629,14 @@ class StatusDashboard(App):
     def _move_linear_issue(self, direction: int) -> None:
         """Move the selected Linear issue up (-1) or down (+1) within its status group."""
         focused = self.focused
-        if not isinstance(focused, DataTable):
+        if not isinstance(focused, VimDataTable):
             return
 
         if focused.id != "linear-table":
             self.notify("Can only move Linear issues", severity="warning")
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         current_row = focused.cursor_row
@@ -2620,8 +2660,8 @@ class StatusDashboard(App):
 
         self._render_linear_table(preserve_cursor=False)
         focused.move_cursor(row=target_row)
-        row_region = focused._get_row_region(target_row)
-        focused.scroll_to_region(row_region, center=True, animate=False)
+        row_region = focused._get_row_region(target_row)  # pyright: ignore[reportPrivateUsage]
+        _ = focused.scroll_to_region(row_region, center=True, animate=False)
 
         self._schedule_linear_sync(moved_issue.id, original_sort_order, target_row)
 
@@ -2640,11 +2680,11 @@ class StatusDashboard(App):
         """Send current issue order to Linear API."""
         self._linear_debounce_handle = None
 
-        if not hasattr(self, "_linear_pending_move"):
+        if self._linear_pending_move is None:
             return
 
         issue_id, original_sort_order, target_row = self._linear_pending_move
-        delattr(self, "_linear_pending_move")
+        self._linear_pending_move = None
 
         if target_row < 0 or target_row >= len(self._linear_issues):
             return
@@ -2689,12 +2729,12 @@ class StatusDashboard(App):
             )
         else:
             self.notify("Failed to save issue order", severity="error")
-            self._refresh_linear()
+            _ = self._refresh_linear()
 
     def action_create_goal(self) -> None:
         """Show modal to create a new weekly goal."""
         focused = self.focused
-        if not isinstance(focused, DataTable) or focused.id != "goals-table":
+        if not isinstance(focused, VimDataTable) or focused.id != "goals-table":
             self.notify("Focus on goals panel first", severity="warning")
             return
 
@@ -2713,11 +2753,11 @@ class StatusDashboard(App):
     def action_complete_goal(self) -> None:
         """Mark the selected goal as complete."""
         focused = self.focused
-        if not isinstance(focused, DataTable) or focused.id != "goals-table":
+        if not isinstance(focused, VimDataTable) or focused.id != "goals-table":
             self.notify("Select a goal first", severity="warning")
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
@@ -2753,11 +2793,11 @@ class StatusDashboard(App):
     def action_delete_goal(self) -> None:
         """Delete the selected goal."""
         focused = self.focused
-        if not isinstance(focused, DataTable) or focused.id != "goals-table":
+        if not isinstance(focused, VimDataTable) or focused.id != "goals-table":
             self.notify("Select a goal first", severity="warning")
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
@@ -2801,11 +2841,11 @@ class StatusDashboard(App):
     def action_abandon_goal(self) -> None:
         """Mark the selected goal as abandoned (or restore if already abandoned)."""
         focused = self.focused
-        if not isinstance(focused, DataTable) or focused.id != "goals-table":
+        if not isinstance(focused, VimDataTable) or focused.id != "goals-table":
             self.notify("Select a goal first", severity="warning")
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
@@ -2866,11 +2906,11 @@ class StatusDashboard(App):
     def _move_goal(self, direction: int) -> None:
         """Move the selected goal up (-1) or down (+1)."""
         focused = self.focused
-        if not isinstance(focused, DataTable) or focused.id != "goals-table":
+        if not isinstance(focused, VimDataTable) or focused.id != "goals-table":
             self.notify("Can only move goals", severity="warning")
             return
 
-        if focused.cursor_row is None or focused.row_count == 0:
+        if focused.row_count == 0:
             return
 
         # Get the list of goals that can be reordered (incomplete goals in normal view)
@@ -2923,7 +2963,7 @@ class StatusDashboard(App):
     def action_open_goals_setup(self) -> None:
         """Open the weekly goals setup modal."""
         focused = self.focused
-        if not isinstance(focused, DataTable) or focused.id != "goals-table":
+        if not isinstance(focused, VimDataTable) or focused.id != "goals-table":
             self.notify("Focus on goals panel first", severity="warning")
             return
 
@@ -2955,7 +2995,7 @@ class StatusDashboard(App):
                 _ = goals_db.delete_goal(goal_id)
 
         # Create or update goals with their per-goal estimates
-        for i, goal in enumerate(goals_from_modal):
+        for _i, goal in enumerate(goals_from_modal):
             if not goal.id:
                 # New goal - create and then update estimates
                 new_id = goals_db.create_goal(goal.content, week_start)
@@ -2975,8 +3015,10 @@ class StatusDashboard(App):
         # Update sort orders based on modal order
         new_goals = goals_db.get_goals_for_week(week_start)
         # Map modal order to new goals
-        modal_order = {g.content: i for i, g in enumerate(goals_from_modal)}
-        new_orders = {}
+        modal_order: dict[str, int] = {
+            g.content: i for i, g in enumerate(goals_from_modal)
+        }
+        new_orders: dict[str, int] = {}
         for g in new_goals:
             if g.content in modal_order:
                 new_orders[g.id] = modal_order[g.content]

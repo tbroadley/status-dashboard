@@ -1,10 +1,10 @@
 """Modal dialogs for creating Todoist tasks and Linear issues."""
 
-from datetime import date
-from typing import Any
+from datetime import date, datetime
+from typing import ClassVar, override
 
 from textual.app import ComposeResult
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Select, TextArea
@@ -15,13 +15,13 @@ from status_dashboard.db import goals as goals_db
 class ConfirmationModal(ModalScreen[bool]):
     """Generic confirmation modal for destructive actions."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "dismiss_modal", "Cancel"),
         Binding("y", "confirm", "Confirm", show=False),
         Binding("n", "dismiss_modal", "Cancel", show=False),
     ]
 
-    CSS = """
+    CSS: ClassVar[str] = """
     ConfirmationModal {
         align: center middle;
     }
@@ -60,19 +60,22 @@ class ConfirmationModal(ModalScreen[bool]):
     }
     """
 
+    _title: str
+    _message: str
+    _confirm_label: str
+
     def __init__(
         self,
         title: str,
         message: str,
         confirm_label: str = "Delete",
-        *args: Any,
-        **kwargs: Any,
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__()
         self._title = title
         self._message = message
         self._confirm_label = confirm_label
 
+    @override
     def compose(self) -> ComposeResult:
         with Container(id="confirm-dialog"):
             yield Label(self._title, id="confirm-title")
@@ -99,15 +102,15 @@ class ConfirmationModal(ModalScreen[bool]):
             _ = self.dismiss(False)
 
 
-class CreateTodoistTaskModal(ModalScreen):
+class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
     """Modal for creating a new Todoist task."""
 
-    BINDINGS = [("escape", "dismiss_modal", "Close")]
+    BINDINGS: ClassVar[list[BindingType]] = [("escape", "dismiss_modal", "Close")]
 
     def action_dismiss_modal(self) -> None:
-        self.dismiss(None)
+        _ = self.dismiss(None)
 
-    CSS = """
+    CSS: ClassVar[str] = """
     CreateTodoistTaskModal {
         align: center middle;
     }
@@ -145,6 +148,7 @@ class CreateTodoistTaskModal(ModalScreen):
     }
     """
 
+    @override
     def compose(self) -> ComposeResult:
         with Container(id="dialog"):
             yield Label("Create Todoist Task", id="title")
@@ -193,15 +197,15 @@ class CreateTodoistTaskModal(ModalScreen):
             self.on_button_pressed(Button.Pressed(create_btn))
 
 
-class CreateLinearIssueModal(ModalScreen):
+class CreateLinearIssueModal(ModalScreen[dict[str, str] | None]):
     """Modal for creating a new Linear issue."""
 
-    BINDINGS = [("escape", "dismiss_modal", "Close")]
+    BINDINGS: ClassVar[list[BindingType]] = [("escape", "dismiss_modal", "Close")]
 
     def action_dismiss_modal(self) -> None:
-        self.dismiss(None)
+        _ = self.dismiss(None)
 
-    CSS = """
+    CSS: ClassVar[str] = """
     CreateLinearIssueModal {
         align: center middle;
     }
@@ -238,17 +242,19 @@ class CreateLinearIssueModal(ModalScreen):
     }
     """
 
+    team_members: list[dict[str, str]]
+    viewer_id: str | None
+
     def __init__(
         self,
-        team_members: list[dict[str, Any]],
-        *args: Any,
+        team_members: list[dict[str, str]],
         viewer_id: str | None = None,
-        **kwargs: Any,
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__()
         self.team_members = team_members
         self.viewer_id = viewer_id
 
+    @override
     def compose(self) -> ComposeResult:
         # Build assignee options, with viewer at the top
         assignee_options = [("Unassigned", "")]
@@ -291,8 +297,8 @@ class CreateLinearIssueModal(ModalScreen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "create-btn":
             title_input = self.query_one("#title-input", Input)
-            state_select = self.query_one("#state-select", Select)
-            assignee_select = self.query_one("#assignee-select", Select)
+            state_select = self.query_one("#state-select", Select[str])
+            assignee_select = self.query_one("#assignee-select", Select[str])
 
             title = title_input.value.strip()
             if title:
@@ -303,11 +309,11 @@ class CreateLinearIssueModal(ModalScreen):
                 assignee_id = str(assignee_select.value)
                 if assignee_id:
                     result["assignee_id"] = assignee_id
-                self.dismiss(result)
+                _ = self.dismiss(result)
             else:
-                title_input.focus()
+                _ = title_input.focus()
         else:
-            self.dismiss(None)
+            _ = self.dismiss(None)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle Enter key in the input."""
@@ -320,12 +326,12 @@ class CreateLinearIssueModal(ModalScreen):
 class EditTodoistTaskModal(ModalScreen[dict[str, str] | None]):
     """Modal for editing an existing Todoist task."""
 
-    BINDINGS = [("escape", "dismiss_modal", "Close")]
+    BINDINGS: ClassVar[list[BindingType]] = [("escape", "dismiss_modal", "Close")]
 
     def action_dismiss_modal(self) -> None:
         _ = self.dismiss(None)
 
-    CSS = """
+    CSS: ClassVar[str] = """
     EditTodoistTaskModal {
         align: center middle;
     }
@@ -367,6 +373,13 @@ class EditTodoistTaskModal(ModalScreen[dict[str, str] | None]):
     }
     """
 
+    task_id: str
+    initial_content: str
+    initial_description: str
+    initial_project_id: str | None
+    initial_due_string: str | None
+    projects: list[tuple[str, str]]
+
     def __init__(
         self,
         task_id: str,
@@ -375,10 +388,8 @@ class EditTodoistTaskModal(ModalScreen[dict[str, str] | None]):
         project_id: str | None,
         due_string: str | None,
         projects: list[tuple[str, str]],
-        *args: Any,
-        **kwargs: Any,
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__()
         self.task_id = task_id
         self.initial_content = content
         self.initial_description = description
@@ -386,6 +397,7 @@ class EditTodoistTaskModal(ModalScreen[dict[str, str] | None]):
         self.initial_due_string = due_string
         self.projects = projects
 
+    @override
     def compose(self) -> ComposeResult:
         project_options: list[tuple[str, str]] = [("Inbox", "")]
         project_options.extend(self.projects)
@@ -423,7 +435,7 @@ class EditTodoistTaskModal(ModalScreen[dict[str, str] | None]):
         if event.button.id == "save-btn":
             content_input = self.query_one("#content-input", Input)
             description_input = self.query_one("#description-input", TextArea)
-            project_select = self.query_one("#project-select", Select)
+            project_select = self.query_one("#project-select", Select[str])
             due_input = self.query_one("#due-input", Input)
 
             content = content_input.value.strip()
@@ -465,12 +477,12 @@ class EditTodoistTaskModal(ModalScreen[dict[str, str] | None]):
 class CreateGoalModal(ModalScreen[dict[str, str] | None]):
     """Modal for creating a new weekly goal."""
 
-    BINDINGS = [("escape", "dismiss_modal", "Close")]
+    BINDINGS: ClassVar[list[BindingType]] = [("escape", "dismiss_modal", "Close")]
 
     def action_dismiss_modal(self) -> None:
         _ = self.dismiss(None)
 
-    CSS = """
+    CSS: ClassVar[str] = """
     CreateGoalModal {
         align: center middle;
     }
@@ -503,6 +515,7 @@ class CreateGoalModal(ModalScreen[dict[str, str] | None]):
     }
     """
 
+    @override
     def compose(self) -> ComposeResult:
         with Container(id="dialog"):
             yield Label("Add Weekly Goal", id="title")
@@ -530,10 +543,10 @@ class CreateGoalModal(ModalScreen[dict[str, str] | None]):
             self.on_button_pressed(Button.Pressed(create_btn))
 
 
-class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
+class WeeklyGoalsSetupModal(ModalScreen[dict[str, object] | None]):
     """Full-screen modal for managing all weekly goals at once."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "dismiss_modal", "Close"),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
@@ -544,7 +557,7 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
         Binding("K", "move_up", "Move Up", show=False),
     ]
 
-    CSS = """
+    CSS: ClassVar[str] = """
     WeeklyGoalsSetupModal {
         align: center middle;
     }
@@ -642,20 +655,23 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
     }
     """
 
+    week_start: date
+    goals: list[goals_db.Goal]
+    metrics: goals_db.WeekMetrics | None
+
     def __init__(
         self,
         week_start: date,
         goals: list[goals_db.Goal],
         metrics: goals_db.WeekMetrics | None,
-        *args: Any,
-        **kwargs: Any,
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__()
         self.week_start = week_start
         self.goals = list(goals)
         self.metrics = metrics
         self._editing_index: int | None = None
 
+    @override
     def compose(self) -> ComposeResult:
         week_str = self.week_start.strftime("%b %d, %Y")
 
@@ -875,7 +891,7 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
                     is_abandoned=False,
                     completed_at=None,
                     abandoned_at=None,
-                    created_at=__import__("datetime").datetime.now(),
+                    created_at=datetime.now(),
                     sort_order=len(self.goals),
                 )
                 self.goals.append(new_goal)
@@ -954,10 +970,10 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, Any] | None]):
             _ = self.dismiss(None)
 
 
-class WeeklyReviewModal(ModalScreen[dict[str, Any] | None]):
+class WeeklyReviewModal(ModalScreen[dict[str, object] | None]):
     """Modal for reviewing last week's goals and entering actual time."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "dismiss_modal", "Close"),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
@@ -965,7 +981,7 @@ class WeeklyReviewModal(ModalScreen[dict[str, Any] | None]):
         Binding("enter", "toggle_or_submit", "Toggle/Submit"),
     ]
 
-    CSS = """
+    CSS: ClassVar[str] = """
     WeeklyReviewModal {
         align: center middle;
     }
@@ -1054,20 +1070,23 @@ class WeeklyReviewModal(ModalScreen[dict[str, Any] | None]):
     }
     """
 
+    week_start: date
+    goals: list[goals_db.Goal]
+    metrics: goals_db.WeekMetrics | None
+
     def __init__(
         self,
         week_start: date,
         goals: list[goals_db.Goal],
         metrics: goals_db.WeekMetrics | None,
-        *args: Any,
-        **kwargs: Any,
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__()
         self.week_start = week_start
         self.goals = list(goals)
         self.metrics = metrics
         self._completions: dict[str, bool] = {g.id: g.is_completed for g in goals}
 
+    @override
     def compose(self) -> ComposeResult:
         week_str = self.week_start.strftime("%b %d, %Y")
 
@@ -1139,7 +1158,7 @@ class WeeklyReviewModal(ModalScreen[dict[str, Any] | None]):
                 )
 
                 # Build estimates string
-                estimates_parts = []
+                estimates_parts: list[str] = []
                 if goal.h2_2025_estimate:
                     estimates_parts.append(f"H2:{goal.h2_2025_estimate:.1f}")
                 if goal.predicted_time:
@@ -1234,7 +1253,7 @@ class WeeklyReviewModal(ModalScreen[dict[str, Any] | None]):
             done_btn = self.query_one("#done-btn", Button)
             self.on_button_pressed(Button.Pressed(done_btn))
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    def on_input_submitted(self, _event: Input.Submitted) -> None:
         # Move to next input or submit
         done_btn = self.query_one("#done-btn", Button)
         self.on_button_pressed(Button.Pressed(done_btn))

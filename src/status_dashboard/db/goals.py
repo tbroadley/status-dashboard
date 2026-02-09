@@ -4,8 +4,9 @@ import os
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 
 @dataclass
@@ -95,7 +96,31 @@ def _get_connection() -> sqlite3.Connection:
 
 def get_week_start(d: date) -> date:
     """Get the Monday of the week containing the given date."""
-    return d - __import__("datetime").timedelta(days=d.weekday())
+    return d - timedelta(days=d.weekday())
+
+
+def _row_to_goal(row: sqlite3.Row) -> Goal:
+    """Convert a sqlite3.Row to a Goal dataclass."""
+    completed_at_raw = cast(str | None, row["completed_at"])
+    abandoned_at_raw = cast(str | None, row["abandoned_at"])
+    return Goal(
+        id=cast(str, row["id"]),
+        content=cast(str, row["content"]),
+        week_start=date.fromisoformat(cast(str, row["week_start"])),
+        is_completed=bool(cast(int, row["is_completed"])),
+        is_abandoned=bool(cast(int, row["is_abandoned"])),
+        completed_at=(
+            datetime.fromisoformat(completed_at_raw) if completed_at_raw else None
+        ),
+        abandoned_at=(
+            datetime.fromisoformat(abandoned_at_raw) if abandoned_at_raw else None
+        ),
+        created_at=datetime.fromisoformat(cast(str, row["created_at"])),
+        sort_order=cast(int, row["sort_order"]),
+        h2_2025_estimate=cast(float | None, row["h2_2025_estimate"]),
+        predicted_time=cast(float | None, row["predicted_time"]),
+        actual_time=cast(float | None, row["actual_time"]),
+    )
 
 
 def get_goals_for_week(week_start: date) -> list[Goal]:
@@ -113,33 +138,8 @@ def get_goals_for_week(week_start: date) -> list[Goal]:
             """,
             (week_start.isoformat(),),
         )
-        goals = []
-        for row in cursor.fetchall():
-            goals.append(
-                Goal(
-                    id=row["id"],
-                    content=row["content"],
-                    week_start=date.fromisoformat(row["week_start"]),
-                    is_completed=bool(row["is_completed"]),
-                    is_abandoned=bool(row["is_abandoned"]),
-                    completed_at=(
-                        datetime.fromisoformat(row["completed_at"])
-                        if row["completed_at"]
-                        else None
-                    ),
-                    abandoned_at=(
-                        datetime.fromisoformat(row["abandoned_at"])
-                        if row["abandoned_at"]
-                        else None
-                    ),
-                    created_at=datetime.fromisoformat(row["created_at"]),
-                    sort_order=row["sort_order"],
-                    h2_2025_estimate=row["h2_2025_estimate"],
-                    predicted_time=row["predicted_time"],
-                    actual_time=row["actual_time"],
-                )
-            )
-        return goals
+        rows: list[sqlite3.Row] = cursor.fetchall()
+        return [_row_to_goal(row) for row in rows]
     finally:
         conn.close()
 
@@ -154,7 +154,8 @@ def create_goal(content: str, week_start: date) -> str:
             "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM goals WHERE week_start = ?",
             (week_start.isoformat(),),
         )
-        sort_order = cursor.fetchone()[0]
+        fetch_row = cast(sqlite3.Row | None, cursor.fetchone())
+        sort_order = cast(int, fetch_row[0]) if fetch_row else 0
         _ = conn.execute(
             """
             INSERT INTO goals (id, content, week_start, is_completed, created_at, sort_order)
@@ -260,16 +261,16 @@ def get_week_metrics(week_start: date) -> WeekMetrics | None:
             """,
             (week_start.isoformat(),),
         )
-        row = cursor.fetchone()
+        row = cast(sqlite3.Row | None, cursor.fetchone())
         if not row:
             return None
         return WeekMetrics(
-            week_start=date.fromisoformat(row["week_start"]),
-            h2_2025_estimate=row["h2_2025_estimate"],
-            predicted_time=row["predicted_time"],
-            actual_time=row["actual_time"],
-            created_at=datetime.fromisoformat(row["created_at"]),
-            updated_at=datetime.fromisoformat(row["updated_at"]),
+            week_start=date.fromisoformat(cast(str, row["week_start"])),
+            h2_2025_estimate=cast(float | None, row["h2_2025_estimate"]),
+            predicted_time=cast(float | None, row["predicted_time"]),
+            actual_time=cast(float | None, row["actual_time"]),
+            created_at=datetime.fromisoformat(cast(str, row["created_at"])),
+            updated_at=datetime.fromisoformat(cast(str, row["updated_at"])),
         )
     finally:
         conn.close()
@@ -285,10 +286,13 @@ def upsert_week_metrics(
     conn = _get_connection()
     try:
         now = datetime.now().isoformat()
-        existing = conn.execute(
-            "SELECT 1 FROM week_metrics WHERE week_start = ?",
-            (week_start.isoformat(),),
-        ).fetchone()
+        existing = cast(
+            sqlite3.Row | None,
+            conn.execute(
+                "SELECT 1 FROM week_metrics WHERE week_start = ?",
+                (week_start.isoformat(),),
+            ).fetchone(),
+        )
 
         if existing:
             updates = ["updated_at = ?"]

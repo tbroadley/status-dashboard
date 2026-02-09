@@ -61,6 +61,8 @@ class GoalAbandonAction(UndoAction):
 
 
 class UndoStack:
+    _max_size: int
+
     def __init__(self, max_size: int = 15):
         self._stack: list[UndoAction] = []
         self._max_size = max_size
@@ -68,7 +70,7 @@ class UndoStack:
     def push(self, action: UndoAction) -> None:
         self._stack.append(action)
         if len(self._stack) > self._max_size:
-            self._stack.pop(0)
+            _ = self._stack.pop(0)
 
     def pop(self) -> UndoAction | None:
         return self._stack.pop() if self._stack else None

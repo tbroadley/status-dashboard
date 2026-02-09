@@ -4,12 +4,15 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import TypeAlias, cast
 from datetime import date, datetime, timedelta
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Type alias for JSON objects from API responses
+JsonDict: TypeAlias = dict[str, object]
 
 
 @dataclass
@@ -83,8 +86,8 @@ def get_tasks_for_date(target_date: date, api_token: str | None = None) -> list[
             },
             timeout=15,
         )
-        response.raise_for_status()
-        data = response.json()
+        _ = response.raise_for_status()
+        data = cast(JsonDict, response.json())
     except httpx.TimeoutException:
         logger.error("Todoist API request timed out")
         return []
@@ -101,17 +104,18 @@ def get_tasks_for_date(target_date: date, api_token: str | None = None) -> list[
     target_date_str = target_date.isoformat()
     today_str = date.today().isoformat()
     is_today = target_date_str == today_str
-    tasks = []
+    tasks: list[Task] = []
 
-    for item in data.get("items", []):
+    items = cast(list[JsonDict], data.get("items", []))
+    for item in items:
         if item.get("checked") or item.get("is_deleted"):
             continue
 
-        due = item.get("due")
+        due = cast(JsonDict | None, item.get("due"))
         if not due:
             continue
 
-        due_date_raw = due.get("date", "")
+        due_date_raw = cast(str, due.get("date", ""))
         due_date = due_date_raw[:10]
         if is_today:
             if due_date > target_date_str:
@@ -123,20 +127,20 @@ def get_tasks_for_date(target_date: date, api_token: str | None = None) -> list[
         due_time = _extract_local_time(due_date_raw)
 
         v2_id = item.get("v2_id", item["id"])
-        slug = _slugify(item["content"])
+        slug = _slugify(cast(str, item["content"]))
         url = f"https://app.todoist.com/app/task/{slug}-{v2_id}"
 
         tasks.append(
             Task(
-                id=item["id"],
-                content=item["content"],
-                is_completed=item.get("checked", False),
+                id=cast(str, item["id"]),
+                content=cast(str, item["content"]),
+                is_completed=bool(item.get("checked", False)),
                 url=url,
-                day_order=item.get("day_order", 0),
+                day_order=cast(int, item.get("day_order", 0)),
                 due_date=due_date,
                 due_time=due_time,
-                comment_count=item.get("comment_count", 0),
-                description=item.get("description", ""),
+                comment_count=cast(int, item.get("comment_count", 0)),
+                description=cast(str, item.get("description", "")),
             )
         )
 
@@ -158,7 +162,7 @@ def complete_task(task_id: str, api_token: str | None = None) -> bool:
             headers={"Authorization": f"Bearer {token}"},
             timeout=10,
         )
-        response.raise_for_status()
+        _ = response.raise_for_status()
         return True
     except httpx.HTTPStatusError as e:
         logger.error("Failed to complete task: %s", e.response.status_code)
@@ -199,7 +203,7 @@ def defer_task(task_id: str, api_token: str | None = None) -> bool:
             json={"due_date": next_day.isoformat()},
             timeout=10,
         )
-        response.raise_for_status()
+        _ = response.raise_for_status()
         return True
     except httpx.HTTPStatusError as e:
         logger.error("Failed to defer task: %s", e.response.status_code)
@@ -238,8 +242,9 @@ def create_task(
             json=payload,
             timeout=10,
         )
-        response.raise_for_status()
-        return response.json().get("id")
+        _ = response.raise_for_status()
+        result = cast(JsonDict, response.json())
+        return cast(str | None, result.get("id"))
     except httpx.HTTPStatusError as e:
         logger.error(
             "Failed to create task: %s - %s", e.response.status_code, e.response.text
@@ -263,7 +268,7 @@ def delete_task(task_id: str, api_token: str | None = None) -> bool:
             headers={"Authorization": f"Bearer {token}"},
             timeout=10,
         )
-        response.raise_for_status()
+        _ = response.raise_for_status()
         return True
     except httpx.HTTPStatusError as e:
         logger.error("Failed to delete task: %s", e.response.status_code)
@@ -286,7 +291,7 @@ def reopen_task(task_id: str, api_token: str | None = None) -> bool:
             headers={"Authorization": f"Bearer {token}"},
             timeout=10,
         )
-        response.raise_for_status()
+        _ = response.raise_for_status()
         return True
     except httpx.HTTPStatusError as e:
         logger.error("Failed to reopen task: %s", e.response.status_code)
@@ -296,7 +301,7 @@ def reopen_task(task_id: str, api_token: str | None = None) -> bool:
         return False
 
 
-def get_task(task_id: str, api_token: str | None = None) -> dict[str, Any] | None:
+def get_task(task_id: str, api_token: str | None = None) -> JsonDict | None:
     """Get a Todoist task by ID. Returns task dict or None on error."""
     token = api_token or _get_token()
     if not token:
@@ -309,8 +314,8 @@ def get_task(task_id: str, api_token: str | None = None) -> dict[str, Any] | Non
             headers={"Authorization": f"Bearer {token}"},
             timeout=10,
         )
-        response.raise_for_status()
-        return response.json()
+        _ = response.raise_for_status()
+        return cast(JsonDict, response.json())
     except httpx.HTTPStatusError as e:
         logger.error("Failed to get task: %s", e.response.status_code)
         return None
@@ -339,7 +344,7 @@ def set_due_date(
             json=payload,
             timeout=10,
         )
-        response.raise_for_status()
+        _ = response.raise_for_status()
         return True
     except httpx.HTTPStatusError as e:
         logger.error("Failed to set due date: %s", e.response.status_code)
@@ -368,7 +373,7 @@ def reschedule_to_today(task_id: str, api_token: str | None = None) -> bool:
             json={"due_date": today},
             timeout=10,
         )
-        response.raise_for_status()
+        _ = response.raise_for_status()
         return True
     except httpx.HTTPStatusError as e:
         logger.error("Failed to reschedule task: %s", e.response.status_code)
@@ -387,9 +392,10 @@ def update_day_orders(
         logger.error("TODOIST_API_TOKEN not set")
         return False
 
+    command_uuid = str(uuid.uuid4())
     command = {
         "type": "item_update_day_orders",
-        "uuid": str(uuid.uuid4()),
+        "uuid": command_uuid,
         "args": {"ids_to_orders": ids_to_orders},
     }
 
@@ -400,10 +406,10 @@ def update_day_orders(
             data={"commands": json.dumps([command])},
             timeout=10,
         )
-        response.raise_for_status()
-        result = response.json()
-        sync_status = result.get("sync_status", {})
-        if sync_status.get(command["uuid"]) == "ok":
+        _ = response.raise_for_status()
+        result = cast(JsonDict, response.json())
+        sync_status = cast(JsonDict, result.get("sync_status", {}))
+        if sync_status.get(command_uuid) == "ok":
             return True
         logger.error("Todoist sync command failed: %s", sync_status)
         return False
@@ -435,9 +441,15 @@ def get_projects(api_token: str | None = None) -> list[Project]:
             timeout=10,
         )
         _ = response.raise_for_status()
-        data = response.json()
-        projects = data.get("results", data) if isinstance(data, dict) else data
-        return [Project(id=p["id"], name=p["name"]) for p in projects]
+        raw = cast(list[JsonDict] | JsonDict, response.json())
+        project_list = cast(
+            list[JsonDict],
+            raw.get("results", raw) if isinstance(raw, dict) else raw,
+        )
+        return [
+            Project(id=cast(str, p["id"]), name=cast(str, p["name"]))
+            for p in project_list
+        ]
     except httpx.HTTPStatusError as e:
         logger.error("Failed to get projects: %s", e.response.status_code)
         return []
@@ -460,7 +472,7 @@ def update_task(
         logger.error("TODOIST_API_TOKEN not set")
         return False
 
-    payload: dict[str, Any] = {}
+    payload: dict[str, str] = {}
     if content is not None:
         payload["content"] = content
     if description is not None:

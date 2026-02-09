@@ -2,10 +2,14 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+_JsonDict = dict[str, Any]  # pyright: ignore[reportExplicitAny]
+_JsonList = list[_JsonDict]
 
 # Order for sorting issues by status
 STATUS_ORDER = {
@@ -209,7 +213,41 @@ STATE_NAME_MAP = {
 STATE_DISPLAY_TO_KEY = {v: k for k, v in STATE_NAME_MAP.items()}
 
 
-def _get_initials(name: str | None) -> str | None:
+def _get_str(d: _JsonDict, key: str, default: str = "") -> str:
+    val = d.get(key, default)  # pyright: ignore[reportAny]
+    return str(val) if val is not None else default  # pyright: ignore[reportAny]
+
+
+def _get_float(d: _JsonDict, key: str, default: float = 0.0) -> float:
+    val = d.get(key, default)  # pyright: ignore[reportAny]
+    return float(val) if val is not None else default  # pyright: ignore[reportAny]
+
+
+def _get_bool(d: _JsonDict, key: str, default: bool = False) -> bool:
+    val = d.get(key, default)  # pyright: ignore[reportAny]
+    return bool(val)  # pyright: ignore[reportAny]
+
+
+def _get_dict(d: _JsonDict, key: str) -> _JsonDict:
+    val = d.get(key)
+    if isinstance(val, dict):
+        return val  # pyright: ignore[reportUnknownVariableType]
+    return {}
+
+
+def _get_list(d: _JsonDict, key: str) -> _JsonList:
+    val = d.get(key)
+    if isinstance(val, list):
+        return val  # pyright: ignore[reportUnknownVariableType]
+    return []
+
+
+def _parse_json(response: httpx.Response) -> _JsonDict:
+    data: _JsonDict = response.json()  # pyright: ignore[reportAny]
+    return data
+
+
+def get_initials(name: str | None) -> str | None:
     """Get initials from a name like 'Thomas Broadley' -> 'TB'."""
     if not name:
         return None
@@ -243,8 +281,8 @@ def get_project_issues(
             headers={"Authorization": key},
             timeout=10,
         )
-        response.raise_for_status()
-        data = response.json()
+        _ = response.raise_for_status()
+        data = _parse_json(response)
     except httpx.TimeoutException:
         logger.error("Linear API request timed out")
         return []
@@ -259,25 +297,26 @@ def get_project_issues(
         return []
 
     issues_by_id: dict[str, Issue] = {}
-    data_payload = data.get("data") or {}
-    projects = data_payload.get("projects", {}).get("nodes", [])
+    data_payload = _get_dict(data, "data")
+    projects = _get_list(_get_dict(data_payload, "projects"), "nodes")
     for proj in projects:
-        for issue in proj.get("issues", {}).get("nodes", []):
-            assignee = issue.get("assignee")
-            assignee_name = (
-                assignee.get("displayName") or assignee.get("name")
+        issue_nodes = _get_list(_get_dict(proj, "issues"), "nodes")
+        for issue in issue_nodes:
+            assignee = _get_dict(issue, "assignee")
+            assignee_name: str | None = (
+                _get_str(assignee, "displayName") or _get_str(assignee, "name") or None
                 if assignee
                 else None
             )
 
-            issues_by_id[issue["id"]] = Issue(
-                id=issue["id"],
-                identifier=issue["identifier"],
-                title=issue["title"],
-                state=issue.get("state", {}).get("name", "Unknown"),
-                url=issue["url"],
-                team_id=issue.get("team", {}).get("id", ""),
-                assignee_initials=_get_initials(assignee_name),
+            issues_by_id[_get_str(issue, "id")] = Issue(
+                id=_get_str(issue, "id"),
+                identifier=_get_str(issue, "identifier"),
+                title=_get_str(issue, "title"),
+                state=_get_str(_get_dict(issue, "state"), "name", "Unknown"),
+                url=_get_str(issue, "url"),
+                team_id=_get_str(_get_dict(issue, "team"), "id"),
+                assignee_initials=get_initials(assignee_name),
             )
 
     # Also get team issues without a project
@@ -313,7 +352,7 @@ def _get_team_issues_without_project(
             timeout=10,
         )
         _ = response.raise_for_status()
-        data = response.json()
+        data = _parse_json(response)
     except httpx.TimeoutException:
         logger.error("Linear API request timed out")
         return []
@@ -327,31 +366,33 @@ def _get_team_issues_without_project(
         logger.error("Failed to parse Linear response: %s", e)
         return []
 
-    issues = []
-    teams = data.get("data", {}).get("teams", {}).get("nodes", [])
+    issues: list[Issue] = []
+    data_payload = _get_dict(data, "data")
+    teams = _get_list(_get_dict(data_payload, "teams"), "nodes")
     for team in teams:
-        for issue in team.get("issues", {}).get("nodes", []):
+        issue_nodes = _get_list(_get_dict(team, "issues"), "nodes")
+        for issue in issue_nodes:
             # Skip issues that have a project
-            if issue.get("project"):
+            if _get_dict(issue, "project"):
                 continue
 
-            assignee = issue.get("assignee")
-            assignee_name = (
-                assignee.get("displayName") or assignee.get("name")
+            assignee = _get_dict(issue, "assignee")
+            assignee_name: str | None = (
+                _get_str(assignee, "displayName") or _get_str(assignee, "name") or None
                 if assignee
                 else None
             )
 
             issues.append(
                 Issue(
-                    id=issue["id"],
-                    identifier=issue["identifier"],
-                    title=issue["title"],
-                    state=issue.get("state", {}).get("name", "Unknown"),
-                    url=issue["url"],
-                    team_id=issue.get("team", {}).get("id", ""),
-                    assignee_initials=_get_initials(assignee_name),
-                    sort_order=issue.get("sortOrder", 0.0),
+                    id=_get_str(issue, "id"),
+                    identifier=_get_str(issue, "identifier"),
+                    title=_get_str(issue, "title"),
+                    state=_get_str(_get_dict(issue, "state"), "name", "Unknown"),
+                    url=_get_str(issue, "url"),
+                    team_id=_get_str(_get_dict(issue, "team"), "id"),
+                    assignee_initials=get_initials(assignee_name),
+                    sort_order=_get_float(issue, "sortOrder"),
                 )
             )
 
@@ -386,19 +427,20 @@ def set_issue_state(
             headers={"Authorization": key},
             timeout=10,
         )
-        data = response.json()
+        data = _parse_json(response)
 
         if "errors" in data:
-            logger.error("Linear API error getting workflow states: %s", data["errors"])
+            logger.error("Linear API error getting workflow states: %s", data["errors"])  # pyright: ignore[reportAny]
             return False
 
-        states = data.get("data", {}).get("workflowStates", {}).get("nodes", [])
+        data_payload = _get_dict(data, "data")
+        states = _get_list(_get_dict(data_payload, "workflowStates"), "nodes")
 
         # Find the target state
         state_id = None
         for state in states:
-            if state["name"] == target_state:
-                state_id = state["id"]
+            if _get_str(state, "name") == target_state:
+                state_id = _get_str(state, "id")
                 break
 
         if not state_id:
@@ -415,13 +457,13 @@ def set_issue_state(
             headers={"Authorization": key},
             timeout=10,
         )
-        result = response.json()
+        result = _parse_json(response)
 
         if "errors" in result:
-            logger.error("Linear API error updating issue: %s", result["errors"])
+            logger.error("Linear API error updating issue: %s", result["errors"])  # pyright: ignore[reportAny]
             return False
 
-        return result.get("data", {}).get("issueUpdate", {}).get("success", False)
+        return _get_bool(_get_dict(_get_dict(result, "data"), "issueUpdate"), "success")
 
     except httpx.HTTPStatusError as e:
         logger.error(
@@ -461,24 +503,25 @@ def get_team_info(
             headers={"Authorization": key},
             timeout=10,
         )
-        response.raise_for_status()
-        data = response.json()
+        _ = response.raise_for_status()
+        data = _parse_json(response)
 
         if "errors" in data:
-            logger.error("Linear API error getting team: %s", data["errors"])
+            logger.error("Linear API error getting team: %s", data["errors"])  # pyright: ignore[reportAny]
             return None
 
-        projects = data.get("data", {}).get("projects", {}).get("nodes", [])
+        data_payload = _get_dict(data, "data")
+        projects = _get_list(_get_dict(data_payload, "projects"), "nodes")
         if not projects:
             logger.error("Project '%s' not found", project)
             return None
 
-        teams = projects[0].get("teams", {}).get("nodes", [])
+        teams = _get_list(_get_dict(projects[0], "teams"), "nodes")
         if not teams:
             logger.error("No teams found for project '%s'", project)
             return None
 
-        return teams[0]["id"], teams[0]["key"]
+        return _get_str(teams[0], "id"), _get_str(teams[0], "key")
 
     except httpx.RequestError as e:
         logger.error("Failed to get team info: %s", e)
@@ -493,7 +536,7 @@ def get_team_id(
     return info[0] if info else None
 
 
-def get_team_members(api_key: str | None = None) -> list[dict]:
+def get_team_members(api_key: str | None = None) -> list[dict[str, str]]:
     """Get all users in the workspace. Returns list of dicts with id, name, displayName."""
     key = api_key or os.environ.get("LINEAR_API_KEY")
     if not key:
@@ -507,14 +550,17 @@ def get_team_members(api_key: str | None = None) -> list[dict]:
             headers={"Authorization": key},
             timeout=10,
         )
-        response.raise_for_status()
-        data = response.json()
+        _ = response.raise_for_status()
+        data = _parse_json(response)
 
         if "errors" in data:
-            logger.error("Linear API error getting team members: %s", data["errors"])
+            logger.error("Linear API error getting team members: %s", data["errors"])  # pyright: ignore[reportAny]
             return []
 
-        users = data.get("data", {}).get("users", {}).get("nodes", [])
+        data_payload = _get_dict(data, "data")
+        users: list[dict[str, str]] = _get_list(
+            _get_dict(data_payload, "users"), "nodes"
+        )
         return users
 
     except httpx.RequestError as e:
@@ -538,19 +584,20 @@ def get_project_id(project_name: str, api_key: str | None = None) -> str | None:
             headers={"Authorization": key},
             timeout=10,
         )
-        response.raise_for_status()
-        data = response.json()
+        _ = response.raise_for_status()
+        data = _parse_json(response)
 
         if "errors" in data:
-            logger.error("Linear API error getting project ID: %s", data["errors"])
+            logger.error("Linear API error getting project ID: %s", data["errors"])  # pyright: ignore[reportAny]
             return None
 
-        projects = data.get("data", {}).get("projects", {}).get("nodes", [])
+        data_payload = _get_dict(data, "data")
+        projects = _get_list(_get_dict(data_payload, "projects"), "nodes")
         if not projects:
             logger.error("Project '%s' not found", project_name)
             return None
 
-        return projects[0]["id"]
+        return _get_str(projects[0], "id") or None
 
     except httpx.RequestError as e:
         logger.error("Failed to get project ID: %s", e)
@@ -596,18 +643,20 @@ def create_issue(
                 headers={"Authorization": key},
                 timeout=10,
             )
-            data = response.json()
+            data = _parse_json(response)
 
             if "errors" in data:
                 logger.error(
-                    "Linear API error getting workflow states: %s", data["errors"]
+                    "Linear API error getting workflow states: %s",
+                    data["errors"],  # pyright: ignore[reportAny]
                 )
                 return False
 
-            states = data.get("data", {}).get("workflowStates", {}).get("nodes", [])
+            data_payload = _get_dict(data, "data")
+            states = _get_list(_get_dict(data_payload, "workflowStates"), "nodes")
             for state in states:
-                if state["name"] == target_state:
-                    state_id = state["id"]
+                if _get_str(state, "name") == target_state:
+                    state_id = _get_str(state, "id")
                     break
 
             if not state_id:
@@ -640,13 +689,13 @@ def create_issue(
             headers={"Authorization": key},
             timeout=10,
         )
-        result = response.json()
+        result = _parse_json(response)
 
         if "errors" in result:
-            logger.error("Linear API error creating issue: %s", result["errors"])
+            logger.error("Linear API error creating issue: %s", result["errors"])  # pyright: ignore[reportAny]
             return False
 
-        return result.get("data", {}).get("issueCreate", {}).get("success", False)
+        return _get_bool(_get_dict(_get_dict(result, "data"), "issueCreate"), "success")
 
     except httpx.HTTPStatusError as e:
         logger.error(
@@ -671,14 +720,16 @@ def get_viewer_id(api_key: str | None = None) -> str | None:
             headers={"Authorization": key},
             timeout=10,
         )
-        response.raise_for_status()
-        data = response.json()
+        _ = response.raise_for_status()
+        data = _parse_json(response)
 
         if "errors" in data:
-            logger.error("Linear API error getting viewer: %s", data["errors"])
+            logger.error("Linear API error getting viewer: %s", data["errors"])  # pyright: ignore[reportAny]
             return None
 
-        return data.get("data", {}).get("viewer", {}).get("id")
+        data_payload = _get_dict(data, "data")
+        viewer = _get_dict(data_payload, "viewer")
+        return _get_str(viewer, "id") or None
 
     except httpx.RequestError as e:
         logger.error("Failed to get viewer ID: %s", e)
@@ -703,20 +754,20 @@ def assign_issue(
             headers={"Authorization": key},
             timeout=10,
         )
-        result = response.json()
+        result = _parse_json(response)
 
         if "errors" in result:
-            logger.error("Linear API error assigning issue: %s", result["errors"])
+            logger.error("Linear API error assigning issue: %s", result["errors"])  # pyright: ignore[reportAny]
             return False
 
-        return result.get("data", {}).get("issueUpdate", {}).get("success", False)
+        return _get_bool(_get_dict(_get_dict(result, "data"), "issueUpdate"), "success")
 
     except httpx.RequestError as e:
         logger.error("Failed to assign issue: %s", e)
         return False
 
 
-def get_issue(issue_id: str, api_key: str | None = None) -> dict | None:
+def get_issue(issue_id: str, api_key: str | None = None) -> _JsonDict | None:
     """Get a Linear issue by ID. Returns dict with state and assignee info, or None."""
     key = api_key or os.environ.get("LINEAR_API_KEY")
     if not key:
@@ -733,14 +784,16 @@ def get_issue(issue_id: str, api_key: str | None = None) -> dict | None:
             headers={"Authorization": key},
             timeout=10,
         )
-        response.raise_for_status()
-        data = response.json()
+        _ = response.raise_for_status()
+        data = _parse_json(response)
 
         if "errors" in data:
-            logger.error("Linear API error getting issue: %s", data["errors"])
+            logger.error("Linear API error getting issue: %s", data["errors"])  # pyright: ignore[reportAny]
             return None
 
-        return data.get("data", {}).get("issue")
+        data_payload = _get_dict(data, "data")
+        issue = _get_dict(data_payload, "issue")
+        return issue or None
 
     except httpx.RequestError as e:
         logger.error("Failed to get issue: %s", e)
@@ -777,13 +830,13 @@ def update_sort_order(
             headers={"Authorization": key},
             timeout=10,
         )
-        result = response.json()
+        result = _parse_json(response)
 
         if "errors" in result:
-            logger.error("Linear API error updating sort order: %s", result["errors"])
+            logger.error("Linear API error updating sort order: %s", result["errors"])  # pyright: ignore[reportAny]
             return False
 
-        return result.get("data", {}).get("issueUpdate", {}).get("success", False)
+        return _get_bool(_get_dict(_get_dict(result, "data"), "issueUpdate"), "success")
 
     except httpx.RequestError as e:
         logger.error("Failed to update sort order: %s", e)

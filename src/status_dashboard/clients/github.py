@@ -18,6 +18,9 @@ BOT_REVIEWERS = {
     "cursor[bot]",
 }
 
+_JsonDict = dict[str, Any]  # pyright: ignore[reportExplicitAny]
+_JsonList = list[_JsonDict]
+
 
 @dataclass
 class PullRequest:
@@ -56,7 +59,7 @@ class Notification:
     pr_number: int | None = None
 
 
-def _run_gh_graphql(query: str) -> dict | None:
+def _run_gh_graphql(query: str) -> _JsonDict | None:
     """Run a gh api graphql command and return parsed JSON output."""
     try:
         result = subprocess.run(
@@ -85,7 +88,7 @@ def _parse_datetime(dt_str: str) -> datetime:
     return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
 
 
-def _relative_time(dt: datetime) -> str:
+def _relative_time(dt: datetime) -> str:  # pyright: ignore[reportUnusedFunction]
     """Convert datetime to relative time string like '2h ago'."""
     now = datetime.now(timezone.utc)
     diff = now - dt
@@ -197,6 +200,40 @@ def _get_orgs() -> list[str]:
     return [os.environ.get("GITHUB_ORG", "METR")]
 
 
+def _get_str(d: _JsonDict, key: str, default: str = "") -> str:
+    """Get a string value from a JSON dict."""
+    val = d.get(key, default)  # pyright: ignore[reportAny]
+    return str(val) if val is not None else default  # pyright: ignore[reportAny]
+
+
+def _get_int(d: _JsonDict, key: str, default: int = 0) -> int:
+    """Get an int value from a JSON dict."""
+    val = d.get(key, default)  # pyright: ignore[reportAny]
+    return int(val) if val is not None else default  # pyright: ignore[reportAny]
+
+
+def _get_bool(d: _JsonDict, key: str, default: bool = False) -> bool:
+    """Get a bool value from a JSON dict."""
+    val = d.get(key, default)  # pyright: ignore[reportAny]
+    return bool(val)  # pyright: ignore[reportAny]
+
+
+def _get_dict(d: _JsonDict, key: str) -> _JsonDict:
+    """Get a nested dict from a JSON dict, returning empty dict if missing."""
+    val = d.get(key)
+    if isinstance(val, dict):
+        return val  # pyright: ignore[reportUnknownVariableType]
+    return {}
+
+
+def _get_list(d: _JsonDict, key: str) -> _JsonList:
+    """Get a list of dicts from a JSON dict, returning empty list if missing."""
+    val = d.get(key)
+    if isinstance(val, list):
+        return val  # pyright: ignore[reportUnknownVariableType]
+    return []
+
+
 def get_my_prs(orgs: list[str] | None = None) -> list[PullRequest]:
     """Get open PRs created by the current user with review status."""
     owners = orgs or _get_orgs()
@@ -209,48 +246,60 @@ def get_my_prs(orgs: list[str] | None = None) -> list[PullRequest]:
         if not result:
             continue
 
-        nodes = result.get("data", {}).get("search", {}).get("nodes", [])
+        data = _get_dict(result, "data")
+        search = _get_dict(data, "search")
+        nodes = _get_list(search, "nodes")
 
         for pr in nodes:
             if not pr:  # Can be null for non-PR results
                 continue
 
-            reviews = pr.get("latestReviews", {}).get("nodes", [])
+            latest_reviews = _get_dict(pr, "latestReviews")
+            reviews = _get_list(latest_reviews, "nodes")
 
             # Filter out bot reviews
             human_reviews = [
                 r
                 for r in reviews
-                if r.get("author", {}).get("login", "").lower() not in BOT_REVIEWERS
+                if _get_str(_get_dict(r, "author"), "login").lower()
+                not in BOT_REVIEWERS
             ]
 
             # Check review states
-            review_decision = pr.get("reviewDecision")
+            review_decision = _get_str(pr, "reviewDecision")
             is_approved = review_decision == "APPROVED"
             has_changes_requested = any(
-                r.get("state") == "CHANGES_REQUESTED" for r in human_reviews
+                _get_str(r, "state") == "CHANGES_REQUESTED" for r in human_reviews
             )
-            has_comments = any(r.get("state") == "COMMENTED" for r in human_reviews)
+            has_comments = any(
+                _get_str(r, "state") == "COMMENTED" for r in human_reviews
+            )
 
-            commits = pr.get("commits", {}).get("nodes", [])
-            ci_state = None
+            commits_wrapper = _get_dict(pr, "commits")
+            commits = _get_list(commits_wrapper, "nodes")
+            ci_state: str | None = None
             if commits:
-                rollup = commits[0].get("commit", {}).get("statusCheckRollup")
+                commit_node = _get_dict(commits[0], "commit")
+                rollup = _get_dict(commit_node, "statusCheckRollup")
                 if rollup:
-                    ci_state = rollup.get("state")
+                    ci_state = _get_str(rollup, "state") or None
 
-            review_threads = pr.get("reviewThreads", {}).get("nodes", [])
+            threads_wrapper = _get_dict(pr, "reviewThreads")
+            review_threads = _get_list(threads_wrapper, "nodes")
             unresolved_count = sum(
-                1 for thread in review_threads if not thread.get("isResolved", True)
+                1
+                for thread in review_threads
+                if not _get_bool(thread, "isResolved", default=True)
             )
 
+            repo_info = _get_dict(pr, "repository")
             all_prs.append(
                 PullRequest(
-                    number=pr["number"],
-                    title=pr["title"],
-                    repository=pr.get("repository", {}).get("nameWithOwner", "unknown"),
-                    url=pr["url"],
-                    is_draft=pr.get("isDraft", False),
+                    number=_get_int(pr, "number"),
+                    title=_get_str(pr, "title"),
+                    repository=_get_str(repo_info, "nameWithOwner", "unknown"),
+                    url=_get_str(pr, "url"),
+                    is_draft=_get_bool(pr, "isDraft"),
                     is_approved=is_approved,
                     needs_response=has_changes_requested or has_comments,
                     has_review=len(human_reviews) > 0,
@@ -370,7 +419,9 @@ def get_review_requests(orgs: list[str] | None = None) -> list[ReviewRequest]:
         if not result:
             continue
 
-        nodes = result.get("data", {}).get("search", {}).get("nodes", [])
+        data = _get_dict(result, "data")
+        search = _get_dict(data, "search")
+        nodes = _get_list(search, "nodes")
 
         for pr in nodes:
             if not pr:
@@ -378,29 +429,34 @@ def get_review_requests(orgs: list[str] | None = None) -> list[ReviewRequest]:
 
             # Extract requested teams from reviewRequests
             requested_teams: list[str] = []
-            review_requests = pr.get("reviewRequests", {}).get("nodes", [])
+            rr_wrapper = _get_dict(pr, "reviewRequests")
+            review_requests = _get_list(rr_wrapper, "nodes")
             for req in review_requests:
-                reviewer = req.get("requestedReviewer", {})
+                reviewer = _get_dict(req, "requestedReviewer")
                 if reviewer and "slug" in reviewer:
-                    requested_teams.append(reviewer["slug"])
+                    requested_teams.append(_get_str(reviewer, "slug"))
 
             # Check if someone else has already submitted a review
-            reviews = pr.get("latestReviews", {}).get("nodes", [])
+            lr_wrapper = _get_dict(pr, "latestReviews")
+            reviews = _get_list(lr_wrapper, "nodes")
             human_reviews = [
                 r
                 for r in reviews
-                if r.get("author", {}).get("login", "").lower() not in BOT_REVIEWERS
+                if _get_str(_get_dict(r, "author"), "login").lower()
+                not in BOT_REVIEWERS
             ]
             has_other_review = len(human_reviews) > 0
 
+            repo_info = _get_dict(pr, "repository")
+            author_info = _get_dict(pr, "author")
             all_prs.append(
                 ReviewRequest(
-                    number=pr["number"],
-                    title=pr["title"],
-                    repository=pr.get("repository", {}).get("nameWithOwner", "unknown"),
-                    url=pr["url"],
-                    author=pr.get("author", {}).get("login", "unknown"),
-                    created_at=_parse_datetime(pr["createdAt"]),
+                    number=_get_int(pr, "number"),
+                    title=_get_str(pr, "title"),
+                    repository=_get_str(repo_info, "nameWithOwner", "unknown"),
+                    url=_get_str(pr, "url"),
+                    author=_get_str(author_info, "login", "unknown"),
+                    created_at=_parse_datetime(_get_str(pr, "createdAt")),
                     requested_teams=requested_teams,
                     has_other_review=has_other_review,
                 )
@@ -409,7 +465,9 @@ def get_review_requests(orgs: list[str] | None = None) -> list[ReviewRequest]:
     return all_prs
 
 
-def _run_gh_api(endpoint: str, method: str = "GET") -> Any:
+def _run_gh_api(
+    endpoint: str, method: str = "GET"
+) -> _JsonDict | list[_JsonDict] | None:
     """Run a gh api command and return parsed JSON output."""
     try:
         cmd = ["gh", "api", endpoint]
@@ -447,23 +505,24 @@ def get_notifications(orgs: list[str] | None = None) -> list[Notification]:
     if not result or not isinstance(result, list):
         return []
 
-    notifications = []
+    notifications: list[Notification] = []
     for item in result:
-        if item.get("reason") in ("review_requested", "author"):
+        if _get_str(item, "reason") in ("review_requested", "author"):
             continue
 
-        subject = item.get("subject", {})
-        if subject.get("type") != "PullRequest":
+        subject = _get_dict(item, "subject")
+        if _get_str(subject, "type") != "PullRequest":
             continue
 
-        repo_full_name = item.get("repository", {}).get("full_name", "")
+        repo_dict = _get_dict(item, "repository")
+        repo_full_name = _get_str(repo_dict, "full_name")
         if owners and not any(
             repo_full_name.startswith(f"{owner}/") for owner in owners
         ):
             continue
 
-        subject_url = subject.get("url", "")
-        pr_number = None
+        subject_url = _get_str(subject, "url")
+        pr_number: int | None = None
         html_url = ""
         if subject_url:
             parts = subject_url.split("/")
@@ -473,12 +532,12 @@ def get_notifications(orgs: list[str] | None = None) -> list[Notification]:
 
         notifications.append(
             Notification(
-                id=item["id"],
-                reason=item.get("reason", "unknown"),
-                title=subject.get("title", ""),
+                id=_get_str(item, "id"),
+                reason=_get_str(item, "reason", "unknown"),
+                title=_get_str(subject, "title"),
                 repository=repo_full_name,
                 url=html_url,
-                updated_at=_parse_datetime(item["updated_at"]),
+                updated_at=_parse_datetime(_get_str(item, "updated_at")),
                 pr_number=pr_number,
             )
         )

@@ -103,12 +103,12 @@ Many Textual widget methods return custom awaitable objects (`AwaitMount`, `Awai
 - **If you don't await**: Textual will auto-await before the next message is processed
 - **If you await**: The operation completes before the next line executes
 
-**When to await**: If subsequent code depends on the operation having completed (e.g., appending to a list right after clearing it), you MUST await:
+**Default to awaiting.** Always await `clear()`, `remove()`, `mount()`, etc. when the same function does further work on that widget. Using `_ = widget.clear()` to silence the lint is dangerous - it's easy to miss that subsequent code depends on the operation completing.
 
 ```python
 # WRONG - clear() hasn't completed yet when append() runs
 def refresh_list(self):
-    goals_list.clear()
+    _ = goals_list.clear()  # Don't do this!
     goals_list.append(...)  # May append to un-cleared list!
 
 # CORRECT - await ensures clear completes first
@@ -117,7 +117,7 @@ async def refresh_list(self):
     goals_list.append(...)  # List is now empty
 ```
 
-The `reportUnusedCallResult` lint rule catches these. If you see a violation for `AwaitMount`, `AwaitRemove`, or `AwaitComplete`, consider whether the code needs to await the result or can use `_ = ...` to indicate fire-and-forget.
+Only use `_ = ...` for true fire-and-forget cases where no subsequent code in the function touches that widget.
 
 ## Screenshot Test Harness
 

@@ -5,7 +5,7 @@ from typing import Any
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Select, TextArea
 
@@ -1080,7 +1080,7 @@ class WeeklyReviewModal(ModalScreen[dict[str, Any] | None]):
             )
 
             yield Label("Actual time spent (per goal):")
-            yield Vertical(id="actual-times-container")
+            yield VerticalScroll(id="actual-times-container")
 
             with Horizontal(id="review-totals-row"):
                 yield Label("Totals:", id="review-totals-label")
@@ -1127,7 +1127,7 @@ class WeeklyReviewModal(ModalScreen[dict[str, Any] | None]):
             goals_list.index = min(current_index, len(self.goals) - 1)
 
     def _refresh_actual_inputs(self) -> None:
-        container = self.query_one("#actual-times-container", Vertical)
+        container = self.query_one("#actual-times-container", VerticalScroll)
         _ = container.remove_children()
 
         if not self.goals:

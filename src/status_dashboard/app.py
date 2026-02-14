@@ -2353,10 +2353,14 @@ class StatusDashboard(App[None]):
             # Calculate the actual due date for the optimistic task
             optimistic_due_date = self._calculate_due_date(due_string)
 
-            # Only show optimistic task if it will appear in the current view
-            show_optimistic = optimistic_due_date == self._todoist_selected_date
+            # Only show optimistic task if we can parse the date and it
+            # matches the currently displayed day
+            show_optimistic = (
+                optimistic_due_date is not None
+                and optimistic_due_date == self._todoist_selected_date
+            )
 
-            if show_optimistic:
+            if show_optimistic and optimistic_due_date is not None:
                 temp_id = f"temp-{uuid.uuid4()}"
                 optimistic_task = todoist.Task(
                     id=temp_id,
@@ -2383,30 +2387,93 @@ class StatusDashboard(App[None]):
                 # Task is for a different day, just create it without optimistic UI
                 _ = self._do_create_todoist_task(content, due_string, description, None)
 
-    def _calculate_due_date(self, due_string: str) -> date:
+    _DAY_NAMES: ClassVar[dict[str, int]] = {
+        "monday": 0,
+        "tuesday": 1,
+        "wednesday": 2,
+        "thursday": 3,
+        "friday": 4,
+        "saturday": 5,
+        "sunday": 6,
+    }
+
+    def _calculate_due_date(self, due_string: str) -> date | None:
         """Calculate the actual due date from a due_string.
 
         This mirrors Todoist's natural language parsing to predict
-        where the task will appear.
+        where the task will appear. Returns None if the due string
+        can't be parsed, meaning we shouldn't show an optimistic update.
         """
         today = date.today()
+        normalized = due_string.strip().lower()
 
-        if due_string == "today":
+        if normalized in ("today", "tod"):
             return today
-        elif due_string == "tomorrow":
+        if normalized in ("tomorrow", "tom"):
             return today + timedelta(days=1)
-        elif due_string == "monday":
-            # Find the upcoming Monday
-            days_until_monday = (7 - today.weekday()) % 7
-            if days_until_monday == 0:
-                days_until_monday = 7  # If today is Monday, go to next Monday
-            return today + timedelta(days=days_until_monday)
-        elif due_string == "next week":
-            # Todoist interprets "next week" as 7 days from now
+        if normalized == "next week":
             return today + timedelta(days=7)
-        else:
-            # Default to today for unknown strings
-            return today
+
+        # "next <day>" e.g. "next tuesday"
+        next_match = re.match(r"^next\s+(\w+)$", normalized)
+        if next_match:
+            day_name = next_match.group(1)
+            if day_name in self._DAY_NAMES:
+                target_weekday = self._DAY_NAMES[day_name]
+                days_ahead = (target_weekday - today.weekday()) % 7
+                # "next X" always goes to the following week
+                days_ahead += 7
+                return today + timedelta(days=days_ahead)
+
+        # Bare day name e.g. "tuesday", "fri"
+        day_abbrevs: dict[str, int] = {
+            "mon": 0,
+            "tue": 1,
+            "wed": 2,
+            "thu": 3,
+            "fri": 4,
+            "sat": 5,
+            "sun": 6,
+        }
+        target_weekday: int | None = self._DAY_NAMES.get(normalized)
+        if target_weekday is None:
+            target_weekday = day_abbrevs.get(normalized)
+        if target_weekday is not None:
+            days_ahead = (target_weekday - today.weekday()) % 7
+            if days_ahead == 0:
+                days_ahead = 7  # Todoist treats bare day name as next occurrence
+            return today + timedelta(days=days_ahead)
+
+        # ISO date format: YYYY-MM-DD
+        iso_match = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", normalized)
+        if iso_match:
+            try:
+                return date(
+                    int(iso_match.group(1)),
+                    int(iso_match.group(2)),
+                    int(iso_match.group(3)),
+                )
+            except ValueError:
+                return None
+
+        # Slash/dot date formats: M/D, M/D/YYYY, M.D, M.D.YYYY
+        slash_match = re.match(
+            r"^(\d{1,2})[/.](\d{1,2})(?:[/.](\d{2,4}))?$", normalized
+        )
+        if slash_match:
+            month = int(slash_match.group(1))
+            day = int(slash_match.group(2))
+            year_str = slash_match.group(3)
+            year = int(year_str) if year_str else today.year
+            if year < 100:
+                year += 2000
+            try:
+                return date(year, month, day)
+            except ValueError:
+                return None
+
+        # Unrecognized — don't guess, skip optimistic UI
+        return None
 
     @work(exclusive=False)
     async def _do_create_todoist_task(

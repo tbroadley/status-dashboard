@@ -387,6 +387,7 @@ class TodoistDataTable(VimDataTable):
         Binding("K", "app.move_task_up", "Move Up"),
         Binding("shift+down", "app.move_task_down", "Move Down", show=False),
         Binding("shift+up", "app.move_task_up", "Move Up", show=False),
+        Binding("t", "app.todoist_go_to_today", "Today"),
         Binding("h", "app.todoist_previous_day", "Prev Day"),
         Binding("l", "app.todoist_next_day", "Next Day"),
         Binding("left", "app.todoist_previous_day", "Prev Day", show=False),
@@ -1008,6 +1009,8 @@ class StatusDashboard(App[None]):
         selected = self._todoist_selected_date
         if selected == today:
             title_widget.update("Todoist (Today)")
+        elif selected == today - timedelta(days=1):
+            title_widget.update("Todoist (Yesterday)")
         elif selected == today + timedelta(days=1):
             title_widget.update("Todoist (Tomorrow)")
         else:
@@ -1016,10 +1019,6 @@ class StatusDashboard(App[None]):
     def action_todoist_previous_day(self) -> None:
         focused = self.focused
         if not isinstance(focused, VimDataTable) or focused.id != "todoist-table":
-            return
-        today = date.today()
-        if self._todoist_selected_date <= today:
-            self.notify("Cannot go before today", severity="warning")
             return
         self._todoist_selected_date -= timedelta(days=1)
         self._update_todoist_panel_title()
@@ -1030,6 +1029,17 @@ class StatusDashboard(App[None]):
         if not isinstance(focused, VimDataTable) or focused.id != "todoist-table":
             return
         self._todoist_selected_date += timedelta(days=1)
+        self._update_todoist_panel_title()
+        _ = self._refresh_todoist()
+
+    def action_todoist_go_to_today(self) -> None:
+        focused = self.focused
+        if not isinstance(focused, VimDataTable) or focused.id != "todoist-table":
+            return
+        today = date.today()
+        if self._todoist_selected_date == today:
+            return
+        self._todoist_selected_date = today
         self._update_todoist_panel_title()
         _ = self._refresh_todoist()
 

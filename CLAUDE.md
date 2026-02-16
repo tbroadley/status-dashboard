@@ -95,6 +95,7 @@ All clients follow these conventions:
 - Cursor position preserved across refreshes via key matching
 - Relative line numbers (vim-style) updated on cursor movement
 - Toast notifications for user feedback on actions
+- **Optimistic updates required**: Any feature that mutates state on a remote server (API call) must include an optimistic UI update — immediately reflect the change in the UI before the API response, then roll back on failure. This applies to all panels (Todoist, GitHub, Linear). Use the existing undo stack (`undo.py`) to support reversal. See existing patterns: task completion, PR merge, issue state changes, reordering.
 
 ## Textual Awaitable Methods
 

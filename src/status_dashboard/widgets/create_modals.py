@@ -133,7 +133,7 @@ class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
 
     #dialog TextArea {
         margin-bottom: 1;
-        height: 4;
+        height: 5;
     }
 
     #buttons {
@@ -297,8 +297,8 @@ class CreateLinearIssueModal(ModalScreen[dict[str, str] | None]):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "create-btn":
             title_input = self.query_one("#title-input", Input)
-            state_select = self.query_one("#state-select", Select[str])
-            assignee_select = self.query_one("#assignee-select", Select[str])
+            state_select: Select[str] = self.query_one("#state-select", Select)
+            assignee_select: Select[str] = self.query_one("#assignee-select", Select)
 
             title = title_input.value.strip()
             if title:
@@ -435,7 +435,7 @@ class EditTodoistTaskModal(ModalScreen[dict[str, str] | None]):
         if event.button.id == "save-btn":
             content_input = self.query_one("#content-input", Input)
             description_input = self.query_one("#description-input", TextArea)
-            project_select = self.query_one("#project-select", Select[str])
+            project_select: Select[str] = self.query_one("#project-select", Select)
             due_input = self.query_one("#due-input", Input)
 
             content = content_input.value.strip()

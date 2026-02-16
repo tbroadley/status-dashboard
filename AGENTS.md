@@ -44,6 +44,7 @@ Required in `.env` file (see `.env.example`):
 Optional:
 - `GITHUB_ORGS` (comma-separated list, e.g., `METR,metr-middleman`)
 - `GITHUB_ORG` (single org, deprecated; defaults to `METR`)
+- `GITHUB_EXTRA_PR_REPOS` (comma-separated extra repos for My PRs, defaults to `ukgovernmentbeis/inspect_ai,meridianlabs-ai/inspect_scout`)
 - `HIDDEN_REVIEW_REQUESTS` (JSON array)
 
 ## Logging

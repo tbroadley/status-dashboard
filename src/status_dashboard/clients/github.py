@@ -107,9 +107,9 @@ def _relative_time(dt: datetime) -> str:  # pyright: ignore[reportUnusedFunction
         return f"{days}d"
 
 
-MY_PRS_QUERY = """
+MY_PRS_QUERY_TEMPLATE = """
 query {{
-  search(query: "author:@me state:open org:{org} type:pr", type: ISSUE, first: 50) {{
+  search(query: "author:@me state:open {filter} type:pr", type: ISSUE, first: 50) {{
     nodes {{
       ... on PullRequest {{
         number
@@ -200,6 +200,15 @@ def _get_orgs() -> list[str]:
     return [os.environ.get("GITHUB_ORG", "METR")]
 
 
+_DEFAULT_EXTRA_PR_REPOS = "ukgovernmentbeis/inspect_ai,meridianlabs-ai/inspect_scout"
+
+
+def _get_extra_pr_repos() -> list[str]:
+    """Get list of extra repos to include in My PRs, from environment."""
+    repos_str = os.environ.get("GITHUB_EXTRA_PR_REPOS", _DEFAULT_EXTRA_PR_REPOS)
+    return [r.strip() for r in repos_str.split(",") if r.strip()]
+
+
 def _get_str(d: _JsonDict, key: str, default: str = "") -> str:
     """Get a string value from a JSON dict."""
     val = d.get(key, default)  # pyright: ignore[reportAny]
@@ -234,79 +243,92 @@ def _get_list(d: _JsonDict, key: str) -> _JsonList:
     return []
 
 
+def _parse_pr_node(pr: _JsonDict) -> PullRequest | None:
+    """Parse a PR node from the GraphQL response into a PullRequest."""
+    if not pr:
+        return None
+
+    latest_reviews = _get_dict(pr, "latestReviews")
+    reviews = _get_list(latest_reviews, "nodes")
+
+    human_reviews = [
+        r
+        for r in reviews
+        if _get_str(_get_dict(r, "author"), "login").lower() not in BOT_REVIEWERS
+    ]
+
+    review_decision = _get_str(pr, "reviewDecision")
+    is_approved = review_decision == "APPROVED"
+    has_changes_requested = any(
+        _get_str(r, "state") == "CHANGES_REQUESTED" for r in human_reviews
+    )
+    has_comments = any(_get_str(r, "state") == "COMMENTED" for r in human_reviews)
+
+    commits_wrapper = _get_dict(pr, "commits")
+    commits = _get_list(commits_wrapper, "nodes")
+    ci_state: str | None = None
+    if commits:
+        commit_node = _get_dict(commits[0], "commit")
+        rollup = _get_dict(commit_node, "statusCheckRollup")
+        if rollup:
+            ci_state = _get_str(rollup, "state") or None
+
+    threads_wrapper = _get_dict(pr, "reviewThreads")
+    review_threads = _get_list(threads_wrapper, "nodes")
+    unresolved_count = sum(
+        1
+        for thread in review_threads
+        if not _get_bool(thread, "isResolved", default=True)
+    )
+
+    repo_info = _get_dict(pr, "repository")
+    return PullRequest(
+        number=_get_int(pr, "number"),
+        title=_get_str(pr, "title"),
+        repository=_get_str(repo_info, "nameWithOwner", "unknown"),
+        url=_get_str(pr, "url"),
+        is_draft=_get_bool(pr, "isDraft"),
+        is_approved=is_approved,
+        needs_response=has_changes_requested or has_comments,
+        has_review=len(human_reviews) > 0,
+        ci_status=ci_state,
+        unresolved_comment_count=unresolved_count,
+    )
+
+
+def _run_my_prs_query(search_filter: str) -> list[PullRequest]:
+    """Run a My PRs query with the given search filter and return parsed PRs."""
+    query = MY_PRS_QUERY_TEMPLATE.format(filter=search_filter)
+    result = _run_gh_graphql(query)
+    if not result:
+        return []
+
+    data = _get_dict(result, "data")
+    search = _get_dict(data, "search")
+    nodes = _get_list(search, "nodes")
+
+    prs: list[PullRequest] = []
+    for node in nodes:
+        parsed = _parse_pr_node(node)
+        if parsed:
+            prs.append(parsed)
+    return prs
+
+
 def get_my_prs(orgs: list[str] | None = None) -> list[PullRequest]:
     """Get open PRs created by the current user with review status."""
     owners = orgs or _get_orgs()
     all_prs: list[PullRequest] = []
 
     for owner in owners:
-        query = MY_PRS_QUERY.format(org=owner)
-        result = _run_gh_graphql(query)
+        all_prs.extend(_run_my_prs_query(f"org:{owner}"))
 
-        if not result:
-            continue
-
-        data = _get_dict(result, "data")
-        search = _get_dict(data, "search")
-        nodes = _get_list(search, "nodes")
-
-        for pr in nodes:
-            if not pr:  # Can be null for non-PR results
-                continue
-
-            latest_reviews = _get_dict(pr, "latestReviews")
-            reviews = _get_list(latest_reviews, "nodes")
-
-            # Filter out bot reviews
-            human_reviews = [
-                r
-                for r in reviews
-                if _get_str(_get_dict(r, "author"), "login").lower()
-                not in BOT_REVIEWERS
-            ]
-
-            # Check review states
-            review_decision = _get_str(pr, "reviewDecision")
-            is_approved = review_decision == "APPROVED"
-            has_changes_requested = any(
-                _get_str(r, "state") == "CHANGES_REQUESTED" for r in human_reviews
-            )
-            has_comments = any(
-                _get_str(r, "state") == "COMMENTED" for r in human_reviews
-            )
-
-            commits_wrapper = _get_dict(pr, "commits")
-            commits = _get_list(commits_wrapper, "nodes")
-            ci_state: str | None = None
-            if commits:
-                commit_node = _get_dict(commits[0], "commit")
-                rollup = _get_dict(commit_node, "statusCheckRollup")
-                if rollup:
-                    ci_state = _get_str(rollup, "state") or None
-
-            threads_wrapper = _get_dict(pr, "reviewThreads")
-            review_threads = _get_list(threads_wrapper, "nodes")
-            unresolved_count = sum(
-                1
-                for thread in review_threads
-                if not _get_bool(thread, "isResolved", default=True)
-            )
-
-            repo_info = _get_dict(pr, "repository")
-            all_prs.append(
-                PullRequest(
-                    number=_get_int(pr, "number"),
-                    title=_get_str(pr, "title"),
-                    repository=_get_str(repo_info, "nameWithOwner", "unknown"),
-                    url=_get_str(pr, "url"),
-                    is_draft=_get_bool(pr, "isDraft"),
-                    is_approved=is_approved,
-                    needs_response=has_changes_requested or has_comments,
-                    has_review=len(human_reviews) > 0,
-                    ci_status=ci_state,
-                    unresolved_comment_count=unresolved_count,
-                )
-            )
+    extra_repos = _get_extra_pr_repos()
+    if extra_repos:
+        repo_filter = " ".join(f"repo:{r}" for r in extra_repos)
+        extra_prs = _run_my_prs_query(repo_filter)
+        seen_urls = {pr.url for pr in all_prs}
+        all_prs.extend(pr for pr in extra_prs if pr.url not in seen_urls)
 
     return all_prs
 

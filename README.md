@@ -18,6 +18,7 @@ A terminal dashboard for tracking PRs, Todoist tasks, and Linear issues.
    | `LINEAR_PROJECT` | Yes | Name of the Linear project to show issues from |
    | `GITHUB_ORGS` | No | Comma-separated list of GitHub organizations (e.g., `METR,metr-middleman`) |
    | `GITHUB_ORG` | No | Single GitHub organization (deprecated, use `GITHUB_ORGS` instead) |
+   | `GITHUB_EXTRA_PR_REPOS` | No | Comma-separated list of extra repos to show authored PRs from (e.g., `owner/repo1,owner/repo2`) |
    | `HIDDEN_REVIEW_REQUESTS` | No | JSON array of `[repo, pr_number]` pairs to hide from review requests |
 
 3. Install dependencies and run:

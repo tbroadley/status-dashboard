@@ -661,6 +661,7 @@ class StatusDashboard(App[None]):
         self.refresh_all()
         _ = self.set_interval(60, self.refresh_all)
         _ = self._check_for_updates()
+        _ = self.set_interval(30 * 60, self._check_for_updates)
 
     def refresh_all(self) -> None:
         self._refresh_goals()

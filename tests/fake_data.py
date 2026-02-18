@@ -14,6 +14,7 @@ def fake_prs() -> list[github.PullRequest]:
             is_draft=False,
             is_approved=True,
             ci_status="SUCCESS",
+            reviewers=["alice"],
         ),
         github.PullRequest(
             number=87,
@@ -22,6 +23,7 @@ def fake_prs() -> list[github.PullRequest]:
             url="https://github.com/acme/frontend/pull/87",
             is_draft=True,
             ci_status="PENDING",
+            reviewers=[],
         ),
         github.PullRequest(
             number=310,
@@ -32,6 +34,7 @@ def fake_prs() -> list[github.PullRequest]:
             has_review=True,
             ci_status="FAILURE",
             unresolved_comment_count=3,
+            reviewers=["bob", "carol"],
         ),
         github.PullRequest(
             number=55,
@@ -40,6 +43,7 @@ def fake_prs() -> list[github.PullRequest]:
             url="https://github.com/acme/infra/pull/55",
             has_review=True,
             ci_status="SUCCESS",
+            reviewers=["dave"],
         ),
     ]
 

@@ -639,7 +639,7 @@ class StatusDashboard(App[None]):
 
         # Set up table columns - auto-sized based on content
         my_prs = self.query_one("#my-prs-table", MyPRsDataTable)
-        _ = my_prs.add_columns("#", "PR", "Title", "Repo", "Status", "CI", "Cmt")
+        _ = my_prs.add_columns("#", "PR", "Title", "Repo", "Status", "CI", "Cmt", "Rvw")
         self._setup_table(my_prs)
 
         reviews = self.query_one("#review-requests-table", ReviewRequestsDataTable)
@@ -837,7 +837,7 @@ class StatusDashboard(App[None]):
 
         if not self._my_prs:
             _ = table.add_row(
-                "", "", Text("No open PRs", style="dim italic"), "", "", "", ""
+                "", "", Text("No open PRs", style="dim italic"), "", "", "", "", ""
             )
         else:
             for pr in self._my_prs:
@@ -865,6 +865,8 @@ class StatusDashboard(App[None]):
                     else ""
                 )
 
+                reviewers_display = ", ".join(pr.reviewers) if pr.reviewers else ""
+
                 repo = _short_repo(pr.repository)
                 title = pr.title[:40] + "…" if len(pr.title) > 40 else pr.title
                 _ = table.add_row(
@@ -875,6 +877,7 @@ class StatusDashboard(App[None]):
                     status,
                     ci_display,
                     comment_display,
+                    reviewers_display,
                     key=pr.url,
                 )
 

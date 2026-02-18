@@ -34,6 +34,7 @@ class PullRequest:
     has_review: bool = False
     ci_status: str | None = None
     unresolved_comment_count: int = 0
+    reviewers: list[str] | None = None
 
 
 @dataclass
@@ -140,6 +141,18 @@ query {{
         reviewThreads(first: 100) {{
           nodes {{
             isResolved
+          }}
+        }}
+        reviewRequests(first: 20) {{
+          nodes {{
+            requestedReviewer {{
+              ... on User {{
+                login
+              }}
+              ... on Team {{
+                slug
+              }}
+            }}
           }}
         }}
       }}
@@ -281,6 +294,17 @@ def _parse_pr_node(pr: _JsonDict) -> PullRequest | None:
         if not _get_bool(thread, "isResolved", default=True)
     )
 
+    rr_wrapper = _get_dict(pr, "reviewRequests")
+    review_requests = _get_list(rr_wrapper, "nodes")
+    reviewers: list[str] = []
+    for req in review_requests:
+        reviewer = _get_dict(req, "requestedReviewer")
+        login = _get_str(reviewer, "login")
+        slug = _get_str(reviewer, "slug")
+        name = login or slug
+        if name and name.lower() not in BOT_REVIEWERS:
+            reviewers.append(name)
+
     repo_info = _get_dict(pr, "repository")
     return PullRequest(
         number=_get_int(pr, "number"),
@@ -293,6 +317,7 @@ def _parse_pr_node(pr: _JsonDict) -> PullRequest | None:
         has_review=len(human_reviews) > 0,
         ci_status=ci_state,
         unresolved_comment_count=unresolved_count,
+        reviewers=reviewers,
     )
 
 

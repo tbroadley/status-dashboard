@@ -28,6 +28,7 @@ class PullRequest:
     title: str
     repository: str
     url: str
+    created_at: datetime
     is_draft: bool = False
     is_approved: bool = False
     needs_response: bool = False
@@ -117,6 +118,7 @@ query {{
         title
         url
         isDraft
+        createdAt
         repository {{
           nameWithOwner
         }}
@@ -311,6 +313,7 @@ def _parse_pr_node(pr: _JsonDict) -> PullRequest | None:
         title=_get_str(pr, "title"),
         repository=_get_str(repo_info, "nameWithOwner", "unknown"),
         url=_get_str(pr, "url"),
+        created_at=_parse_datetime(_get_str(pr, "createdAt")),
         is_draft=_get_bool(pr, "isDraft"),
         is_approved=is_approved,
         needs_response=has_changes_requested or has_comments,
@@ -355,6 +358,7 @@ def get_my_prs(orgs: list[str] | None = None) -> list[PullRequest]:
         seen_urls = {pr.url for pr in all_prs}
         all_prs.extend(pr for pr in extra_prs if pr.url not in seen_urls)
 
+    all_prs.sort(key=lambda pr: pr.created_at, reverse=True)
     return all_prs
 
 
@@ -509,6 +513,7 @@ def get_review_requests(orgs: list[str] | None = None) -> list[ReviewRequest]:
                 )
             )
 
+    all_prs.sort(key=lambda pr: pr.created_at, reverse=True)
     return all_prs
 
 

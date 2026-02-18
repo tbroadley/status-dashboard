@@ -5,12 +5,14 @@ from status_dashboard.db import goals as goals_db
 
 
 def fake_prs() -> list[github.PullRequest]:
+    now = datetime.now(tz=timezone.utc)
     return [
         github.PullRequest(
             number=142,
             title="Add retry logic for flaky API calls",
             repository="acme/backend",
             url="https://github.com/acme/backend/pull/142",
+            created_at=now - timedelta(days=1),
             is_draft=False,
             is_approved=True,
             ci_status="SUCCESS",
@@ -21,6 +23,7 @@ def fake_prs() -> list[github.PullRequest]:
             title="WIP: Migrate user auth to OAuth2 provider",
             repository="acme/frontend",
             url="https://github.com/acme/frontend/pull/87",
+            created_at=now - timedelta(days=3),
             is_draft=True,
             ci_status="PENDING",
             reviewers=[],
@@ -30,6 +33,7 @@ def fake_prs() -> list[github.PullRequest]:
             title="Fix race condition in task scheduler",
             repository="acme/worker",
             url="https://github.com/acme/worker/pull/310",
+            created_at=now - timedelta(hours=6),
             needs_response=True,
             has_review=True,
             ci_status="FAILURE",
@@ -41,6 +45,7 @@ def fake_prs() -> list[github.PullRequest]:
             title="Bump dependencies and update lockfile",
             repository="acme/infra",
             url="https://github.com/acme/infra/pull/55",
+            created_at=now - timedelta(days=5),
             has_review=True,
             ci_status="SUCCESS",
             reviewers=["dave"],

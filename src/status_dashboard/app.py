@@ -9,7 +9,6 @@ import uuid
 import webbrowser
 from collections import defaultdict
 from datetime import date, timedelta
-from importlib import metadata
 from itertools import groupby
 from pathlib import Path
 from typing import ClassVar, TypeAlias, cast, override
@@ -131,36 +130,42 @@ _setup_logging()
 _logger = logging.getLogger(__name__)
 
 
-def _get_current_version() -> str | None:
-    """Get the currently installed version of status-dashboard."""
+def _get_local_commit() -> str | None:
+    """Get the git commit SHA of the currently running code."""
+    import subprocess
+
+    # Try git rev-parse in the source directory
+    source_dir = Path(__file__).parent
     try:
-        return metadata.version("status-dashboard")
-    except metadata.PackageNotFoundError:
-        return None
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=source_dir,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
 
 
-def _get_remote_version() -> str | None:
-    """Fetch the latest version from the GitHub repository."""
-    url = "https://raw.githubusercontent.com/tbroadley/status-dashboard/main/pyproject.toml"
+def _get_remote_commit() -> str | None:
+    """Fetch the latest commit SHA from the GitHub repository's main branch."""
+    url = "https://api.github.com/repos/tbroadley/status-dashboard/commits/main"
     try:
-        resp = httpx.get(url, timeout=10, follow_redirects=True)
+        resp = httpx.get(
+            url,
+            timeout=10,
+            follow_redirects=True,
+            headers={"Accept": "application/vnd.github.sha"},
+        )
         _ = resp.raise_for_status()
-        content = resp.text
-        for line in content.splitlines():
-            if line.startswith("version"):
-                # Parse: version = "0.1.0"
-                match = re.search(r'version\s*=\s*["\']([^"\']+)["\']', line)
-                if match:
-                    return match.group(1)
-        return None
+        return resp.text.strip()
     except (httpx.HTTPError, httpx.TimeoutException) as e:
-        _logger.warning(f"Failed to fetch remote version: {e}")
+        _logger.warning(f"Failed to fetch remote commit: {e}")
         return None
-
-
-def _version_tuple(v: str) -> tuple[int, ...]:
-    """Convert version string to tuple for comparison."""
-    return tuple(int(x) for x in v.split(".") if x.isdigit())
 
 
 _BindingInfo: TypeAlias = tuple[Binding, bool, str | None]
@@ -452,9 +457,9 @@ class UpdateBanner(Static):
         super().__init__(*args, **kwargs)  # pyright: ignore[reportArgumentType]
         self._new_version: str | None = None
 
-    def show_update(self, new_version: str) -> None:
-        self._new_version = new_version
-        self.update(f"New version available: v{new_version} (press R to upgrade)")
+    def show_update(self, remote_ref: str) -> None:
+        self._new_version = remote_ref
+        self.update(f"Update available ({remote_ref}) — press R to upgrade")
         _ = self.add_class("-visible")
 
     def hide(self) -> None:
@@ -675,21 +680,18 @@ class StatusDashboard(App[None]):
 
     @work(exclusive=False)
     async def _check_for_updates(self) -> None:
-        """Check for updates and show banner if new version is available."""
-        current = _get_current_version()
-        if not current:
+        """Check for updates by comparing local and remote git commits."""
+        local_commit = await asyncio.to_thread(_get_local_commit)
+        if not local_commit:
             return
 
-        remote = await asyncio.to_thread(_get_remote_version)
-        if not remote:
+        remote_commit = await asyncio.to_thread(_get_remote_commit)
+        if not remote_commit:
             return
 
-        try:
-            if _version_tuple(remote) > _version_tuple(current):
-                banner = self.query_one("#update-banner", UpdateBanner)
-                banner.show_update(remote)
-        except (ValueError, TypeError):
-            pass
+        if local_commit != remote_commit:
+            banner = self.query_one("#update-banner", UpdateBanner)
+            banner.show_update(remote_commit[:7])
 
     def _refresh_goals(self) -> None:
         """Refresh the goals table based on current week/review state."""

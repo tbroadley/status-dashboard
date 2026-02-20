@@ -131,11 +131,6 @@ class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
         margin-bottom: 1;
     }
 
-    #dialog TextArea {
-        margin-bottom: 1;
-        height: 5;
-    }
-
     #buttons {
         layout: horizontal;
         align: center middle;
@@ -155,7 +150,7 @@ class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
             yield Label("Task:")
             yield Input(placeholder="Enter task title", id="task-input")
             yield Label("Description:")
-            yield TextArea(id="description-input")
+            yield Input(placeholder="Optional description", id="description-input")
             yield Label("Due:")
             yield Input(
                 value="today",
@@ -169,7 +164,7 @@ class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "create-btn":
             task_input = self.query_one("#task-input", Input)
-            description_input = self.query_one("#description-input", TextArea)
+            description_input = self.query_one("#description-input", Input)
             due_input = self.query_one("#due-input", Input)
 
             task_content = task_input.value.strip()
@@ -178,7 +173,7 @@ class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
                     "content": task_content,
                     "due_string": due_input.value.strip() or "today",
                 }
-                description = description_input.text.strip()
+                description = description_input.value.strip()
                 if description:
                     result["description"] = description
                 _ = self.dismiss(result)
@@ -190,8 +185,11 @@ class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle Enter key in the input."""
         if event.input.id == "task-input":
-            description_input = self.query_one("#description-input")
+            description_input = self.query_one("#description-input", Input)
             _ = description_input.focus()
+        elif event.input.id == "description-input":
+            due_input = self.query_one("#due-input", Input)
+            _ = due_input.focus()
         elif event.input.id == "due-input":
             create_btn = self.query_one("#create-btn", Button)
             self.on_button_pressed(Button.Pressed(create_btn))

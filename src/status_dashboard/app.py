@@ -651,7 +651,7 @@ class StatusDashboard(App[None]):
         self._setup_table(notifs)
 
         todo = self.query_one("#todoist-table", TodoistDataTable)
-        _ = todo.add_columns("#", "!", "", "Time", "#C", "🔗", "Task")
+        _ = todo.add_columns("#", "!", "", "Time", "#C", "📝", "🔗", "Task")
         self._setup_table(todo)
 
         lin = self.query_one("#linear-table", LinearDataTable)
@@ -1085,6 +1085,7 @@ class StatusDashboard(App[None]):
                     or self._extract_url(task.description) is not None
                 )
                 link_display = "🔗" if has_link else ""
+                desc_display = "📝" if task.description else ""
                 content = (
                     task.content[:60] + "…" if len(task.content) > 60 else task.content
                 )
@@ -1094,6 +1095,7 @@ class StatusDashboard(App[None]):
                     checkbox,
                     time_display,
                     comment_display,
+                    desc_display,
                     link_display,
                     content,
                     key=f"todoist:{task.id}:{task.url}",

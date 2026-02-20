@@ -131,10 +131,15 @@ _logger = logging.getLogger(__name__)
 
 
 def _get_local_commit() -> str | None:
-    """Get the git commit SHA of the currently running code."""
+    """Get the git commit SHA of the currently running code.
+
+    Tries two strategies:
+    1. git rev-parse HEAD in the source directory (works for dev installs)
+    2. direct_url.json in the package dist-info (works for uv tool installs from git)
+    """
     import subprocess
 
-    # Try git rev-parse in the source directory
+    # Strategy 1: git rev-parse in the source directory
     source_dir = Path(__file__).parent
     try:
         result = subprocess.run(
@@ -148,6 +153,24 @@ def _get_local_commit() -> str | None:
             return result.stdout.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
+
+    # Strategy 2: read commit hash from direct_url.json (uv tool installs from git)
+    from importlib import metadata as importlib_metadata
+
+    try:
+        dist = importlib_metadata.distribution("status-dashboard")
+        direct_url_text = dist.read_text("direct_url.json")
+        if direct_url_text:
+            direct_url = cast(dict[str, object], json.loads(direct_url_text))
+            vcs_info_raw = direct_url.get("vcs_info")
+            if isinstance(vcs_info_raw, dict):
+                vcs_info = cast(dict[str, object], vcs_info_raw)
+                commit_id = vcs_info.get("commit_id")
+                if isinstance(commit_id, str):
+                    return commit_id
+    except (importlib_metadata.PackageNotFoundError, KeyError, json.JSONDecodeError):
+        pass
+
     return None
 
 
@@ -590,6 +613,7 @@ class StatusDashboard(App[None]):
     _goals_week_metrics: goals_db.WeekMetrics | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _linear_team_id: str  # pyright: ignore[reportUninitializedInstanceVariable]
     _linear_pending_move: tuple[str, float, int] | None  # pyright: ignore[reportUninitializedInstanceVariable]
+    _create_todoist_modal: CreateTodoistTaskModal  # pyright: ignore[reportUninitializedInstanceVariable]
 
     @override
     def compose(self) -> ComposeResult:
@@ -638,6 +662,10 @@ class StatusDashboard(App[None]):
         self._goals_week_metrics = None
         self._linear_team_id = ""
         self._linear_pending_move = None
+
+        # Pre-install the Todoist create modal so subsequent opens are instant
+        self._create_todoist_modal = CreateTodoistTaskModal()
+        self.install_screen(self._create_todoist_modal, "create-todoist-task")  # pyright: ignore[reportUnknownMemberType]
 
         # Set up goals table
         goals_table = self.query_one("#goals-table", GoalsDataTable)
@@ -2368,7 +2396,8 @@ class StatusDashboard(App[None]):
         def handle_result(result: dict[str, str] | None) -> None:
             self._handle_todoist_task_created(result, insert_position)
 
-        _ = self.push_screen(CreateTodoistTaskModal(), handle_result)
+        self._create_todoist_modal.reset()
+        _ = self.push_screen("create-todoist-task", handle_result)
 
     def _handle_todoist_task_created(
         self, result: dict[str, str] | None, insert_position: int

@@ -571,6 +571,7 @@ class StatusDashboard(App[None]):
     _todoist_tasks: list[todoist.Task]  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_pending_orders: dict[str, int] | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_debounce_handle: Timer | None  # pyright: ignore[reportUninitializedInstanceVariable]
+    _todoist_day_debounce_handle: Timer | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_restore_key: str | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_selected_date: date  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_optimistic_tasks: dict[str, todoist.Task]  # pyright: ignore[reportUninitializedInstanceVariable]
@@ -618,6 +619,7 @@ class StatusDashboard(App[None]):
         self._todoist_tasks = []
         self._todoist_pending_orders = None
         self._todoist_debounce_handle = None
+        self._todoist_day_debounce_handle = None
         self._todoist_restore_key = None
         self._todoist_selected_date = date.today()
         self._todoist_optimistic_tasks = {}
@@ -1002,6 +1004,8 @@ class StatusDashboard(App[None]):
     async def _refresh_todoist(self) -> None:
         selected_date = self._todoist_selected_date
         tasks = await asyncio.to_thread(todoist.get_tasks_for_date, selected_date)
+        if selected_date != self._todoist_selected_date:
+            return
         self._todoist_tasks = tasks
         self._update_todoist_panel_title()
         self._render_todoist_table()
@@ -1026,7 +1030,7 @@ class StatusDashboard(App[None]):
             return
         self._todoist_selected_date -= timedelta(days=1)
         self._update_todoist_panel_title()
-        _ = self._refresh_todoist()
+        self._debounced_refresh_todoist()
 
     def action_todoist_next_day(self) -> None:
         focused = self.focused
@@ -1034,7 +1038,7 @@ class StatusDashboard(App[None]):
             return
         self._todoist_selected_date += timedelta(days=1)
         self._update_todoist_panel_title()
-        _ = self._refresh_todoist()
+        self._debounced_refresh_todoist()
 
     def action_todoist_go_to_today(self) -> None:
         focused = self.focused
@@ -1045,6 +1049,18 @@ class StatusDashboard(App[None]):
             return
         self._todoist_selected_date = today
         self._update_todoist_panel_title()
+        self._debounced_refresh_todoist()
+
+    def _debounced_refresh_todoist(self) -> None:
+        """Schedule a debounced refresh of Todoist tasks for day navigation."""
+        if self._todoist_day_debounce_handle:
+            self._todoist_day_debounce_handle.stop()
+        self._todoist_day_debounce_handle = self.set_timer(
+            0.3, self._fire_todoist_day_refresh
+        )
+
+    def _fire_todoist_day_refresh(self) -> None:
+        self._todoist_day_debounce_handle = None
         _ = self._refresh_todoist()
 
     def _render_todoist_table(self, preserve_cursor: bool = True) -> None:

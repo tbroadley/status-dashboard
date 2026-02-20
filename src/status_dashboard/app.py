@@ -1673,7 +1673,12 @@ class StatusDashboard(App[None]):
     async def _do_reschedule_overdue_to_today(self, tasks: list[todoist.Task]) -> None:
         success_count = 0
         for task in tasks:
-            success = await asyncio.to_thread(todoist.reschedule_to_today, task.id)
+            success = await asyncio.to_thread(
+                todoist.reschedule_to_today,
+                task.id,
+                task.is_recurring,
+                task.due_string,
+            )
             if success:
                 success_count += 1
 

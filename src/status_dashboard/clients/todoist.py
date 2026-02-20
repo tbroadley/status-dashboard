@@ -26,6 +26,8 @@ class Task:
     due_time: str | None = None
     comment_count: int = 0
     description: str = ""
+    is_recurring: bool = False
+    due_string: str | None = None
 
 
 def _get_token() -> str | None:
@@ -125,6 +127,8 @@ def get_tasks_for_date(target_date: date, api_token: str | None = None) -> list[
                 continue
 
         due_time = _extract_local_time(due_date_raw)
+        is_recurring = bool(due.get("is_recurring", False))
+        due_string = cast(str | None, due.get("string"))
 
         v2_id = item.get("v2_id", item["id"])
         slug = _slugify(cast(str, item["content"]))
@@ -141,6 +145,8 @@ def get_tasks_for_date(target_date: date, api_token: str | None = None) -> list[
                 due_time=due_time,
                 comment_count=cast(int, item.get("comment_count", 0)),
                 description=cast(str, item.get("description", "")),
+                is_recurring=is_recurring,
+                due_string=due_string,
             )
         )
 
@@ -354,14 +360,22 @@ def set_due_date(
         return False
 
 
-def reschedule_to_today(task_id: str, api_token: str | None = None) -> bool:
-    """Reschedule a task to today. Returns True on success."""
+def reschedule_to_today(
+    task_id: str,
+    is_recurring: bool = False,
+    due_string: str | None = None,
+    api_token: str | None = None,
+) -> bool:
+    """Reschedule a task to today, preserving recurrence. Returns True on success."""
     token = api_token or _get_token()
     if not token:
         logger.error("TODOIST_API_TOKEN not set")
         return False
 
     today = date.today().isoformat()
+
+    if is_recurring and due_string:
+        return _reschedule_recurring_via_sync(task_id, today, due_string, token)
 
     try:
         response = httpx.post(
@@ -380,6 +394,46 @@ def reschedule_to_today(task_id: str, api_token: str | None = None) -> bool:
         return False
     except httpx.RequestError as e:
         logger.error("Failed to reschedule task: %s", e)
+        return False
+
+
+def _reschedule_recurring_via_sync(
+    task_id: str, today: str, due_string: str, token: str
+) -> bool:
+    """Reschedule a recurring task to today using the Sync API to preserve recurrence."""
+    command_uuid = str(uuid.uuid4())
+    command = {
+        "type": "item_update",
+        "uuid": command_uuid,
+        "args": {
+            "id": task_id,
+            "due": {
+                "date": today,
+                "string": due_string,
+                "is_recurring": True,
+            },
+        },
+    }
+
+    try:
+        response = httpx.post(
+            "https://api.todoist.com/api/v1/sync",
+            headers={"Authorization": f"Bearer {token}"},
+            data={"commands": json.dumps([command])},
+            timeout=10,
+        )
+        _ = response.raise_for_status()
+        result = cast(JsonDict, response.json())
+        sync_status = cast(JsonDict, result.get("sync_status", {}))
+        if sync_status.get(command_uuid) == "ok":
+            return True
+        logger.error("Todoist sync command failed: %s", sync_status)
+        return False
+    except httpx.HTTPStatusError as e:
+        logger.error("Failed to reschedule recurring task: %s", e.response.status_code)
+        return False
+    except httpx.RequestError as e:
+        logger.error("Failed to reschedule recurring task: %s", e)
         return False
 
 

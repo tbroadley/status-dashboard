@@ -162,7 +162,7 @@ Session state is stored in `tests/screenshots/sessions/<name>/`:
 
 Use `--size 120x55` to see all 6 panels (default 120x40 cuts off bottom panels).
 
-**Panel navigation in tests:** Use `ctrl+shift+down` / `ctrl+shift+up` to switch panels (NOT `Tab` — that's Textual's default focus-next which doesn't follow the custom panel order). Panel order: Goals → My PRs → Review Requests → Notifications → Todoist → Linear.
+**Panel navigation in tests:** Use `ctrl+shift+down` / `ctrl+shift+up` to switch panels (NOT `Tab` — that's Textual's default focus-next which doesn't follow the custom panel order).
 
 ## Error Handling
 

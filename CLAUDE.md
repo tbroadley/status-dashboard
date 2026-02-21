@@ -121,6 +121,21 @@ async def refresh_list(self):
 
 Only use `_ = ...` for true fire-and-forget cases where no subsequent code in the function touches that widget.
 
+## Reusable Modal Screens
+
+Modals installed via `install_screen()` are only composed/mounted when first pushed. Do NOT call `query_one()` on their widgets before `push_screen()` — it will throw `NoMatches`. Instead, use `on_screen_resume` to reset fields each time the screen is shown:
+
+```python
+# WRONG - widgets aren't mounted yet
+self._modal.reset()  # calls query_one() internally → NoMatches
+_ = self.push_screen("my-modal", callback)
+
+# CORRECT - reset happens in lifecycle hook when widgets exist
+class MyModal(ModalScreen):
+    def on_screen_resume(self) -> None:
+        self.query_one("#input", Input).value = ""
+```
+
 ## Screenshot Test Harness
 
 Headless TUI testing via `tests/screenshot.py`. Uses Textual's `run_test()` with mocked API clients and fake data (`tests/fake_data.py`). Output goes to `tests/screenshots/` (gitignored).

@@ -4,6 +4,7 @@ import logging
 import logging.handlers
 import os
 import re
+import subprocess
 import sys
 import uuid
 import webbrowser
@@ -13,7 +14,6 @@ from itertools import groupby
 from pathlib import Path
 from typing import ClassVar, TypeAlias, cast, override
 
-import httpx
 from dotenv import find_dotenv, load_dotenv
 from rich.text import Text
 from textual import work
@@ -137,7 +137,6 @@ def _get_local_commit() -> str | None:
     1. git rev-parse HEAD in the source directory (works for dev installs)
     2. direct_url.json in the package dist-info (works for uv tool installs from git)
     """
-    import subprocess
 
     # Strategy 1: git rev-parse in the source directory
     source_dir = Path(__file__).parent
@@ -176,18 +175,26 @@ def _get_local_commit() -> str | None:
 
 def _get_remote_commit() -> str | None:
     """Fetch the latest commit SHA from the GitHub repository's main branch."""
-    url = "https://api.github.com/repos/tbroadley/status-dashboard/commits/main"
+
     try:
-        resp = httpx.get(
-            url,
+        result = subprocess.run(
+            [
+                "gh",
+                "api",
+                "repos/tbroadley/status-dashboard/commits/main",
+                "-H",
+                "Accept: application/vnd.github.sha",
+            ],
+            capture_output=True,
+            text=True,
             timeout=10,
-            follow_redirects=True,
-            headers={"Accept": "application/vnd.github.sha"},
         )
-        _ = resp.raise_for_status()
-        return resp.text.strip()
-    except (httpx.HTTPError, httpx.TimeoutException) as e:
-        _logger.warning(f"Failed to fetch remote commit: {e}")
+        if result.returncode != 0:
+            _logger.warning("Failed to fetch remote commit: %s", result.stderr.strip())
+            return None
+        return result.stdout.strip() or None
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        _logger.warning("Failed to fetch remote commit: %s", e)
         return None
 
 
@@ -1223,7 +1230,6 @@ class StatusDashboard(App[None]):
     def _is_uv_tool(self) -> bool:
         """Check if this app is installed as a uv tool."""
         import shutil
-        import subprocess
 
         if not shutil.which("uv"):
             return False
@@ -1240,7 +1246,6 @@ class StatusDashboard(App[None]):
 
     def _upgrade_uv_tool(self) -> tuple[bool, str]:
         """Force reinstall the uv tool and return (success, message)."""
-        import subprocess
 
         try:
             result = subprocess.run(

@@ -106,7 +106,7 @@ class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
     """Modal for creating a new Todoist task.
 
     Designed to be installed once via install_screen() and reused.
-    Call reset() before each push_screen() to clear input fields.
+    Input fields are automatically cleared each time the screen is shown.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [("escape", "dismiss_modal", "Close")]
@@ -165,8 +165,8 @@ class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
                 yield Button("Create", variant="primary", id="create-btn")
                 yield Button("Cancel", id="cancel-btn")
 
-    def reset(self) -> None:
-        """Clear all input fields for reuse. Call before push_screen()."""
+    def on_screen_resume(self) -> None:
+        """Clear all input fields each time the screen is shown."""
         self.query_one("#task-input", Input).value = ""
         self.query_one("#description-input", Input).value = ""
         self.query_one("#due-input", Input).value = "today"

@@ -2396,7 +2396,6 @@ class StatusDashboard(App[None]):
         def handle_result(result: dict[str, str] | None) -> None:
             self._handle_todoist_task_created(result, insert_position)
 
-        self._create_todoist_modal.reset()
         _ = self.push_screen("create-todoist-task", handle_result)
 
     def _handle_todoist_task_created(

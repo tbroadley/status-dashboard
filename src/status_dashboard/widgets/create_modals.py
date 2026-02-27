@@ -135,6 +135,11 @@ class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
         margin-bottom: 1;
     }
 
+    #dialog TextArea {
+        margin-bottom: 1;
+        min-height: 5;
+    }
+
     #buttons {
         layout: horizontal;
         align: center middle;
@@ -154,7 +159,7 @@ class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
             yield Label("Task:")
             yield Input(placeholder="Enter task title", id="task-input")
             yield Label("Description:")
-            yield Input(placeholder="Optional description", id="description-input")
+            yield TextArea(id="description-input")
             yield Label("Due:")
             yield Input(
                 value="today",
@@ -168,14 +173,14 @@ class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
     def on_screen_resume(self) -> None:
         """Clear all input fields each time the screen is shown."""
         self.query_one("#task-input", Input).value = ""
-        self.query_one("#description-input", Input).value = ""
+        self.query_one("#description-input", TextArea).text = ""
         self.query_one("#due-input", Input).value = "today"
         _ = self.query_one("#task-input", Input).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "create-btn":
             task_input = self.query_one("#task-input", Input)
-            description_input = self.query_one("#description-input", Input)
+            description_input = self.query_one("#description-input", TextArea)
             due_input = self.query_one("#due-input", Input)
 
             task_content = task_input.value.strip()
@@ -184,7 +189,7 @@ class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
                     "content": task_content,
                     "due_string": due_input.value.strip() or "today",
                 }
-                description = description_input.value.strip()
+                description = description_input.text.strip()
                 if description:
                     result["description"] = description
                 _ = self.dismiss(result)
@@ -193,14 +198,14 @@ class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
         else:
             _ = self.dismiss(None)
 
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        line_count = event.text_area.document.line_count
+        event.text_area.styles.height = max(5, min(line_count + 1, 12))
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle Enter key in the input."""
         if event.input.id == "task-input":
-            description_input = self.query_one("#description-input", Input)
-            _ = description_input.focus()
-        elif event.input.id == "description-input":
-            due_input = self.query_one("#due-input", Input)
-            _ = due_input.focus()
+            _ = self.query_one("#description-input", TextArea).focus()
         elif event.input.id == "due-input":
             create_btn = self.query_one("#create-btn", Button)
             self.on_button_pressed(Button.Pressed(create_btn))
@@ -365,7 +370,7 @@ class EditTodoistTaskModal(ModalScreen[dict[str, str] | None]):
 
     #dialog TextArea {
         margin-bottom: 1;
-        height: 4;
+        min-height: 5;
     }
 
     #dialog Select {
@@ -476,6 +481,10 @@ class EditTodoistTaskModal(ModalScreen[dict[str, str] | None]):
             _ = self.dismiss(result)
         else:
             _ = self.dismiss(None)
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        line_count = event.text_area.document.line_count
+        event.text_area.styles.height = max(5, min(line_count + 1, 12))
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle Enter key in the title input."""

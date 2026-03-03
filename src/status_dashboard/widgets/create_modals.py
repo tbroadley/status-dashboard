@@ -1,6 +1,6 @@
 """Modal dialogs for creating Todoist tasks and Linear issues."""
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import ClassVar, cast, override
 
 from textual.app import ComposeResult
@@ -111,8 +111,19 @@ class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [("escape", "dismiss_modal", "Close")]
 
+    default_due_date: date | None = None
+
     def action_dismiss_modal(self) -> None:
         _ = self.dismiss(None)
+
+    @staticmethod
+    def _format_due_date(d: date) -> str:
+        today = date.today()
+        if d == today:
+            return "today"
+        if d == today + timedelta(days=1):
+            return "tomorrow"
+        return d.isoformat()
 
     CSS: ClassVar[str] = """
     CreateTodoistTaskModal {
@@ -174,7 +185,12 @@ class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
         """Clear all input fields each time the screen is shown."""
         self.query_one("#task-input", Input).value = ""
         self.query_one("#description-input", TextArea).text = ""
-        self.query_one("#due-input", Input).value = "today"
+        due_str = (
+            self._format_due_date(self.default_due_date)
+            if self.default_due_date
+            else "today"
+        )
+        self.query_one("#due-input", Input).value = due_str
         _ = self.query_one("#task-input", Input).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

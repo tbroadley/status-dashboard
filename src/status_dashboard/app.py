@@ -620,6 +620,7 @@ class StatusDashboard(App[None]):
     _goals_week_metrics: goals_db.WeekMetrics | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _linear_team_id: str  # pyright: ignore[reportUninitializedInstanceVariable]
     _linear_pending_move: tuple[str, float, int] | None  # pyright: ignore[reportUninitializedInstanceVariable]
+    _last_action_undoable: bool  # pyright: ignore[reportUninitializedInstanceVariable]
     _create_todoist_modal: CreateTodoistTaskModal  # pyright: ignore[reportUninitializedInstanceVariable]
 
     @override
@@ -669,6 +670,7 @@ class StatusDashboard(App[None]):
         self._goals_week_metrics = None
         self._linear_team_id = ""
         self._linear_pending_move = None
+        self._last_action_undoable = True
 
         # Pre-install the Todoist create modal so subsequent opens are instant
         self._create_todoist_modal = CreateTodoistTaskModal()
@@ -1283,10 +1285,15 @@ class StatusDashboard(App[None]):
             self.notify("Nothing to undo", severity="warning")
             return
 
+        if not self._last_action_undoable:
+            self.notify("Last action is not undoable", severity="warning")
+            return
+
         action = self._undo_stack.pop()
         if action is None:
             return
 
+        self._last_action_undoable = True
         _ = self._execute_undo(action)
 
     @work(exclusive=False)
@@ -1432,12 +1439,7 @@ class StatusDashboard(App[None]):
                     task_id, task_name, removed_task, removed_index
                 )
         elif focused.id == "linear-table" and key.startswith("linear:"):
-            # Key format: "linear:{issue_id}:{team_id}:{url}"
-            parts = key.split(":", 3)
-            if len(parts) >= 3:
-                issue_id = parts[1]
-                team_id = parts[2]
-                _ = self._do_complete_linear_issue(issue_id, team_id)
+            self.action_set_linear_state("done")
         else:
             self.notify(
                 "Can only complete Todoist tasks or Linear issues", severity="warning"
@@ -1473,6 +1475,7 @@ class StatusDashboard(App[None]):
                     description=description,
                 )
             )
+            self._last_action_undoable = True
             self.notify("Task completed!")
         else:
             # Rollback: restore the task to its original position
@@ -1552,6 +1555,7 @@ class StatusDashboard(App[None]):
                     description=description,
                 )
             )
+            self._last_action_undoable = True
             self.notify("Task deferred to next working day")
         else:
             # Rollback: restore the task to its original position
@@ -1805,15 +1809,6 @@ class StatusDashboard(App[None]):
 
         self.notify("No link found in task", severity="warning")
 
-    @work(exclusive=False)
-    async def _do_complete_linear_issue(self, issue_id: str, team_id: str) -> None:
-        success = await asyncio.to_thread(linear.complete_issue, issue_id, team_id)
-        if success:
-            self.notify("Issue marked as Done!")
-            _ = self._refresh_linear()
-        else:
-            self.notify("Failed to complete issue", severity="error")
-
     def action_set_linear_state(self, state: str) -> None:
         """Set the selected Linear issue's state."""
         focused = self.focused
@@ -1872,14 +1867,27 @@ class StatusDashboard(App[None]):
                     issue_to_update.state = state_display
                 self._render_linear_table()
 
+            # Push undo action immediately so 'z' always undoes the right thing
+            undo_action: LinearSetStateAction | None = None
+            if original_state:
+                description = f"Set {issue_identifier or issue_id} to {state_display}"
+                undo_action = LinearSetStateAction(
+                    issue_id=issue_id,
+                    team_id=team_id,
+                    previous_state=original_state,
+                    description=description,
+                )
+                self._undo_stack.push(undo_action)
+                self._last_action_undoable = True
+
             _ = self._do_set_linear_state(
                 issue_id,
                 team_id,
                 state,
-                issue_identifier,
-                original_state,
                 removed_issue,
                 removed_index,
+                original_state,
+                undo_action,
             )
 
     def _get_row_identifier(self, table: DataTable[str | Text]) -> str:
@@ -1898,28 +1906,21 @@ class StatusDashboard(App[None]):
         issue_id: str,
         team_id: str,
         state: str,
-        issue_identifier: str | None,
-        original_state: str | None,
         removed_issue: linear.Issue | None,
         removed_index: int,
+        original_state: str | None,
+        undo_action: LinearSetStateAction | None,
     ) -> None:
         state_display = linear.STATE_NAME_MAP.get(state, state)
         success = await asyncio.to_thread(
             linear.set_issue_state, issue_id, team_id, state
         )
         if success:
-            if original_state:
-                description = f"Set {issue_identifier or issue_id} to {state_display}"
-                self._undo_stack.push(
-                    LinearSetStateAction(
-                        issue_id=issue_id,
-                        team_id=team_id,
-                        previous_state=original_state,
-                        description=description,
-                    )
-                )
             self.notify(f"Moved to {state_display}")
         else:
+            # Pop the undo action we pushed optimistically (if still there)
+            if undo_action is not None:
+                _ = self._undo_stack.pop_if_matches(undo_action)
             # Rollback: restore original state or re-insert removed issue
             if removed_issue is not None and removed_index >= 0:
                 self._linear_issues.insert(removed_index, removed_issue)
@@ -2064,6 +2065,7 @@ class StatusDashboard(App[None]):
                     description=description,
                 )
             )
+            self._last_action_undoable = True
             self.notify("Assigned to you" if assign else "Unassigned")
         else:
             # Rollback: restore original initials
@@ -2117,6 +2119,7 @@ class StatusDashboard(App[None]):
                     if review_to_remove is not None and review_index >= 0:
                         _ = self._review_requests.pop(review_index)
                         self._render_review_requests_table()
+                    self._last_action_undoable = False
                     _ = self._do_remove_self_as_reviewer(
                         repo, pr_number, review_to_remove, review_index
                     )
@@ -2190,6 +2193,7 @@ class StatusDashboard(App[None]):
             _ = self._my_prs.pop(removed_index)
             self._render_my_prs_table()
 
+        self._last_action_undoable = False
         _ = self._do_merge_pr(pr.repository, pr.number, removed_pr, removed_index)
 
     @work(exclusive=False)
@@ -2373,6 +2377,7 @@ class StatusDashboard(App[None]):
         table.refresh_line_numbers()
 
         # Make API call in background
+        self._last_action_undoable = False
         _ = self._do_mark_notification_read(
             thread_id, removed_notification, removed_index
         )
@@ -2401,6 +2406,7 @@ class StatusDashboard(App[None]):
         def handle_result(result: dict[str, str] | None) -> None:
             self._handle_todoist_task_created(result, insert_position)
 
+        self._create_todoist_modal.default_due_date = self._todoist_selected_date
         _ = self.push_screen("create-todoist-task", handle_result)
 
     def _handle_todoist_task_created(
@@ -2866,6 +2872,7 @@ class StatusDashboard(App[None]):
                     description=f"Move {issue.identifier}",
                 )
             )
+            self._last_action_undoable = True
         else:
             self.notify("Failed to save issue order", severity="error")
             _ = self._refresh_linear()
@@ -2922,6 +2929,7 @@ class StatusDashboard(App[None]):
             self._undo_stack.push(
                 GoalCompleteAction(goal_id=goal_id, description=description)
             )
+            self._last_action_undoable = True
             self.notify("Goal completed!")
         else:
             # Rollback: restore original completion state
@@ -3027,6 +3035,7 @@ class StatusDashboard(App[None]):
                 self._undo_stack.push(
                     GoalAbandonAction(goal_id=goal_id, description=description)
                 )
+                self._last_action_undoable = True
                 self.notify(f"Abandoned: {goal.content[:30]}")
             else:
                 # Rollback

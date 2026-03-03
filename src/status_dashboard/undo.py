@@ -75,5 +75,12 @@ class UndoStack:
     def pop(self) -> UndoAction | None:
         return self._stack.pop() if self._stack else None
 
+    def pop_if_matches(self, action: UndoAction) -> bool:
+        """Pop the top action if it is the given action. Returns True if popped."""
+        if self._stack and self._stack[-1] is action:
+            _ = self._stack.pop()
+            return True
+        return False
+
     def is_empty(self) -> bool:
         return len(self._stack) == 0

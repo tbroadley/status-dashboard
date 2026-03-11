@@ -206,6 +206,34 @@ query {{
 """
 
 
+_my_username: str | None = None
+
+
+def get_my_username() -> str | None:
+    """Get the current authenticated GitHub user's login via `gh api user`."""
+    global _my_username  # noqa: PLW0603
+    if _my_username is not None:
+        return _my_username
+    try:
+        result = subprocess.run(
+            ["gh", "api", "user", "--jq", ".login"],
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT,
+        )
+        if result.returncode != 0:
+            logger.warning("Failed to get GitHub username: %s", result.stderr.strip())
+            return None
+        _my_username = result.stdout.strip()
+        return _my_username
+    except subprocess.TimeoutExpired:
+        logger.error("gh command timed out after %d seconds", SUBPROCESS_TIMEOUT)
+        return None
+    except FileNotFoundError:
+        logger.error("gh CLI not found. Install it from https://cli.github.com/")
+        return None
+
+
 def _get_orgs() -> list[str]:
     """Get list of GitHub organizations from environment."""
     orgs_str = os.environ.get("GITHUB_ORGS", "")
@@ -459,9 +487,13 @@ def close_pr(repo: str, pr_number: int) -> bool:
 
 
 def get_review_requests(orgs: list[str] | None = None) -> list[ReviewRequest]:
-    """Get open PRs where review is requested from current user."""
+    """Get open PRs where review is requested directly from current user.
+
+    Excludes PRs where review is only requested via team membership.
+    """
     owners = orgs or _get_orgs()
     all_prs: list[ReviewRequest] = []
+    my_username = get_my_username()
 
     for owner in owners:
         query = REVIEW_REQUESTS_QUERY.format(org=owner)
@@ -478,14 +510,22 @@ def get_review_requests(orgs: list[str] | None = None) -> list[ReviewRequest]:
             if not pr:
                 continue
 
-            # Extract requested teams from reviewRequests
+            # Extract requested teams and directly-requested users
             requested_teams: list[str] = []
+            directly_requested_users: list[str] = []
             rr_wrapper = _get_dict(pr, "reviewRequests")
             review_requests = _get_list(rr_wrapper, "nodes")
             for req in review_requests:
                 reviewer = _get_dict(req, "requestedReviewer")
                 if reviewer and "slug" in reviewer:
                     requested_teams.append(_get_str(reviewer, "slug"))
+                login = _get_str(reviewer, "login")
+                if login:
+                    directly_requested_users.append(login)
+
+            # Skip PRs where review is only requested via team, not directly
+            if my_username and my_username not in directly_requested_users:
+                continue
 
             # Check if someone else has already submitted a review
             lr_wrapper = _get_dict(pr, "latestReviews")

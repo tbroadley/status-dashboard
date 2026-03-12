@@ -525,6 +525,22 @@ def _short_repo(repo: str) -> str:
     return repo[:11]
 
 
+def _is_macos_dark_mode() -> bool | None:
+    """Detect macOS system appearance. Returns True for dark, False for light, None if not macOS."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["defaults", "read", "-g", "AppleInterfaceStyle"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        return result.returncode == 0 and "Dark" in result.stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 class StatusDashboard(App[None]):
     """Terminal dashboard for PRs, Todoist, and Linear."""
 
@@ -650,6 +666,10 @@ class StatusDashboard(App[None]):
         table.zebra_stripes = True
 
     def on_mount(self) -> None:
+        dark_mode = _is_macos_dark_mode()
+        if dark_mode is not None:
+            self.dark = dark_mode  # pyright: ignore[reportUnannotatedClassAttribute,reportUninitializedInstanceVariable]
+
         self._undo_stack = UndoStack()
         self._my_prs = []
         self._review_requests = []

@@ -111,7 +111,7 @@ def _relative_time(dt: datetime) -> str:  # pyright: ignore[reportUnusedFunction
 
 MY_PRS_QUERY_TEMPLATE = """
 query {{
-  search(query: "author:@me state:open {filter} type:pr", type: ISSUE, first: 50) {{
+  search(query: "{search_query}", type: ISSUE, first: 50) {{
     nodes {{
       ... on PullRequest {{
         number
@@ -352,9 +352,9 @@ def _parse_pr_node(pr: _JsonDict) -> PullRequest | None:
     )
 
 
-def _run_my_prs_query(search_filter: str) -> list[PullRequest]:
-    """Run a My PRs query with the given search filter and return parsed PRs."""
-    query = MY_PRS_QUERY_TEMPLATE.format(filter=search_filter)
+def _run_my_prs_query(search_query: str) -> list[PullRequest]:
+    """Run a My PRs query with the given search query and return parsed PRs."""
+    query = MY_PRS_QUERY_TEMPLATE.format(search_query=search_query)
     result = _run_gh_graphql(query)
     if not result:
         return []
@@ -372,20 +372,23 @@ def _run_my_prs_query(search_filter: str) -> list[PullRequest]:
 
 
 def get_my_prs(orgs: list[str] | None = None) -> list[PullRequest]:
-    """Get open PRs created by the current user with review status."""
+    """Get open PRs authored by or assigned to the current user with review status."""
     owners = orgs or _get_orgs()
-    all_prs: list[PullRequest] = []
+    prs_by_url: dict[str, PullRequest] = {}
+
+    def add_prs(search_query: str) -> None:
+        for pr in _run_my_prs_query(search_query):
+            _ = prs_by_url.setdefault(pr.url, pr)
 
     for owner in owners:
-        all_prs.extend(_run_my_prs_query(f"org:{owner}"))
+        add_prs(f"author:@me state:open org:{owner} type:pr")
+        add_prs(f"assignee:@me state:open org:{owner} type:pr")
 
-    extra_repos = _get_extra_pr_repos()
-    if extra_repos:
-        repo_filter = " ".join(f"repo:{r}" for r in extra_repos)
-        extra_prs = _run_my_prs_query(repo_filter)
-        seen_urls = {pr.url for pr in all_prs}
-        all_prs.extend(pr for pr in extra_prs if pr.url not in seen_urls)
+    for repo in _get_extra_pr_repos():
+        add_prs(f"author:@me state:open repo:{repo} type:pr")
+        add_prs(f"assignee:@me state:open repo:{repo} type:pr")
 
+    all_prs = list(prs_by_url.values())
     all_prs.sort(key=lambda pr: pr.created_at, reverse=True)
     return all_prs
 

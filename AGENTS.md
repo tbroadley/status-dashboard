@@ -3,7 +3,7 @@
 ## Project Overview
 
 Status Dashboard is a terminal UI application (TUI) built with [Textual](https://textual.textualize.io/) that displays:
-- GitHub pull requests (authored and review requests)
+- GitHub pull requests (authored/assigned PRs and review requests)
 - Todoist tasks
 - Linear issues
 
@@ -68,4 +68,7 @@ All API clients return `None`, empty collections, or `False` on failure rather t
 
 ## Testing
 
-No tests currently exist in this repository.
+Run the lightweight unittest coverage with:
+```bash
+uv run python -m unittest discover
+```

@@ -665,11 +665,13 @@ class StatusDashboard(App[None]):
         table.show_cursor = True
         table.zebra_stripes = True
 
-    def on_mount(self) -> None:
+    def __init__(self) -> None:
+        super().__init__()
         dark_mode = _is_macos_dark_mode()
         if dark_mode is not None:
-            self.dark = dark_mode  # pyright: ignore[reportUnannotatedClassAttribute,reportUninitializedInstanceVariable]
+            self.theme = "textual-dark" if dark_mode else "textual-light"
 
+    def on_mount(self) -> None:
         self._undo_stack = UndoStack()
         self._my_prs = []
         self._review_requests = []

@@ -27,28 +27,6 @@ class TodoistMoveAction(UndoAction):
 
 
 @dataclass
-class LinearSetStateAction(UndoAction):
-    issue_id: str = ""
-    team_id: str = ""
-    previous_state: str = ""
-    action_type: str = "linear_set_state"
-
-
-@dataclass
-class LinearAssignAction(UndoAction):
-    issue_id: str = ""
-    previous_assignee_id: str | None = None
-    action_type: str = "linear_assign"
-
-
-@dataclass
-class LinearMoveAction(UndoAction):
-    issue_id: str = ""
-    previous_sort_order: float = 0.0
-    action_type: str = "linear_move"
-
-
-@dataclass
 class GoalCompleteAction(UndoAction):
     goal_id: str = ""
     action_type: str = "goal_complete"

@@ -64,10 +64,6 @@ PATCHES = [
         return_value=fake_data.fake_todoist_tasks(),
     ),
     patch(
-        "status_dashboard.clients.linear.get_project_issues",
-        return_value=fake_data.fake_linear_issues(),
-    ),
-    patch(
         "status_dashboard.db.goals.get_goals_for_week",
         return_value=fake_data.fake_goals(),
     ),

@@ -5,7 +5,6 @@
 Status Dashboard is a terminal UI application (TUI) built with [Textual](https://textual.textualize.io/) that displays:
 - GitHub pull requests (authored/assigned PRs and review requests)
 - Todoist tasks
-- Linear issues
 
 ## Tech Stack
 
@@ -21,10 +20,9 @@ src/status_dashboard/
 ├── app.py                    # Main application, UI layout, keybindings
 ├── clients/
 │   ├── github.py             # GitHub API via `gh` CLI subprocess
-│   ├── linear.py             # Linear GraphQL API via httpx
 │   └── todoist.py            # Todoist REST API via httpx
 └── widgets/
-    └── create_modals.py      # Modal dialogs for creating tasks/issues
+    └── create_modals.py      # Modal dialogs for creating tasks
 ```
 
 ## Running the App
@@ -38,9 +36,6 @@ uv run status-dashboard
 
 Required in `.env` file (see `.env.example`):
 - `TODOIST_API_TOKEN`
-- `LINEAR_API_KEY`
-- `LINEAR_PROJECT`
-
 Optional:
 - `GITHUB_ORGS` (comma-separated list, e.g., `METR,metr-middleman`)
 - `GITHUB_ORG` (single org, deprecated; defaults to `METR`)

@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 
-from status_dashboard.clients import github, linear, todoist
+from status_dashboard.clients import github, todoist
 from status_dashboard.db import goals as goals_db
 
 
@@ -180,60 +180,6 @@ def fake_todoist_tasks() -> list[todoist.Task]:
             due_date=today,
             due_time="16:30",
             comment_count=1,
-        ),
-    ]
-
-
-def fake_linear_issues() -> list[linear.Issue]:
-    return [
-        linear.Issue(
-            id="iss1",
-            identifier="ENG-301",
-            title="Implement webhook retry with exponential backoff",
-            state="In Progress",
-            url="https://linear.app/acme/issue/ENG-301",
-            team_id="team1",
-            assignee_initials="TB",
-            sort_order=1.0,
-        ),
-        linear.Issue(
-            id="iss2",
-            identifier="ENG-298",
-            title="Add Prometheus metrics to API gateway",
-            state="In Review",
-            url="https://linear.app/acme/issue/ENG-298",
-            team_id="team1",
-            assignee_initials="TB",
-            sort_order=0.5,
-        ),
-        linear.Issue(
-            id="iss3",
-            identifier="ENG-315",
-            title="Research options for real-time notifications",
-            state="Todo",
-            url="https://linear.app/acme/issue/ENG-315",
-            team_id="team1",
-            assignee_initials=None,
-            sort_order=2.0,
-        ),
-        linear.Issue(
-            id="iss4",
-            identifier="ENG-320",
-            title="Fix memory leak in background job processor",
-            state="Todo",
-            url="https://linear.app/acme/issue/ENG-320",
-            team_id="team1",
-            assignee_initials="AK",
-            sort_order=3.0,
-        ),
-        linear.Issue(
-            id="iss5",
-            identifier="ENG-280",
-            title="Upgrade PostgreSQL from 14 to 16",
-            state="Backlog",
-            url="https://linear.app/acme/issue/ENG-280",
-            team_id="team1",
-            sort_order=5.0,
         ),
     ]
 

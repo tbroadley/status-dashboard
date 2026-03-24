@@ -25,14 +25,11 @@ from textual.timer import Timer  # used for cast of debounce handles
 from textual.widgets import DataTable, Footer as TextualFooter, Static
 from textual.widgets._footer import FooterKey, FooterLabel, KeyGroup
 
-from status_dashboard.clients import github, linear, todoist
+from status_dashboard.clients import github, todoist
 from status_dashboard.db import goals as goals_db
 from status_dashboard.undo import (
     GoalAbandonAction,
     GoalCompleteAction,
-    LinearAssignAction,
-    LinearMoveAction,
-    LinearSetStateAction,
     TodoistCompleteAction,
     TodoistDeferAction,
     TodoistMoveAction,
@@ -41,7 +38,6 @@ from status_dashboard.undo import (
 from status_dashboard.widgets.create_modals import (
     ConfirmationModal,
     CreateGoalModal,
-    CreateLinearIssueModal,
     CreateTodoistTaskModal,
     EditTodoistTaskModal,
     WeeklyGoalsSetupModal,
@@ -75,13 +71,6 @@ def _load_hidden_review_requests() -> set[tuple[str, int]]:
 
 
 HIDDEN_REVIEW_REQUESTS = _load_hidden_review_requests()
-
-# Shorten Linear state display names to fit column width
-LINEAR_STATE_SHORT = {
-    "In Progress": "progress",
-    "In Review": "review",
-}
-
 
 def _load_blocked_review_teams() -> set[str]:
     """Load blocked teams from BLOCKED_REVIEW_TEAMS env var (JSON array of team slugs)."""
@@ -430,26 +419,6 @@ class TodoistDataTable(VimDataTable):
     ]
 
 
-class LinearDataTable(VimDataTable):
-    """DataTable for Linear issues with state change bindings."""
-
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("i", "app.create_linear_issue", "New Issue"),
-        Binding("a", "app.assign_self_linear", "Assign Self"),
-        Binding("u", "app.unassign_linear", "Unassign"),
-        Binding("c", "app.complete_task", "Complete"),
-        Binding("b", "app.set_linear_state('backlog')", "Backlog"),
-        Binding("t", "app.set_linear_state('todo')", "Todo"),
-        Binding("p", "app.set_linear_state('in_progress')", "In Progress"),
-        Binding("v", "app.set_linear_state('in_review')", "In Review"),
-        Binding("d", "app.set_linear_state('done')", "Done"),
-        Binding("J", "app.move_linear_issue_down", "Move Down", show=False),
-        Binding("K", "app.move_linear_issue_up", "Move Up", show=False),
-        Binding("shift+down", "app.move_linear_issue_down", "Move Down"),
-        Binding("shift+up", "app.move_linear_issue_up", "Move Up"),
-    ]
-
-
 class GoalsDataTable(VimDataTable):
     """DataTable for weekly goals."""
 
@@ -570,10 +539,6 @@ class StatusDashboard(App[None]):
         max-height: 5;
     }
 
-    #linear {
-        height: 1fr;
-    }
-
     .panel-title {
         background: $accent;
         color: $text;
@@ -585,12 +550,6 @@ class StatusDashboard(App[None]):
     DataTable {
         height: auto;
         max-height: 10;
-        overflow-x: hidden;
-    }
-
-    #linear-table {
-        height: 1fr;
-        max-height: 100%;
         overflow-x: hidden;
     }
 
@@ -626,16 +585,12 @@ class StatusDashboard(App[None]):
     _todoist_restore_key: str | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_selected_date: date  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_optimistic_tasks: dict[str, todoist.Task]  # pyright: ignore[reportUninitializedInstanceVariable]
-    _linear_issues: list[linear.Issue]  # pyright: ignore[reportUninitializedInstanceVariable]
-    _linear_debounce_handle: Timer | None  # pyright: ignore[reportUninitializedInstanceVariable]
-    _linear_viewer_initials: str | None  # pyright: ignore[reportUninitializedInstanceVariable]
+
     _gh_notifications: list[github.Notification]  # pyright: ignore[reportUninitializedInstanceVariable]
     _goals: list[goals_db.Goal]  # pyright: ignore[reportUninitializedInstanceVariable]
     _goals_showing_review: bool  # pyright: ignore[reportUninitializedInstanceVariable]
     _goals_review_dismissed: bool  # pyright: ignore[reportUninitializedInstanceVariable]
     _goals_week_metrics: goals_db.WeekMetrics | None  # pyright: ignore[reportUninitializedInstanceVariable]
-    _linear_team_id: str  # pyright: ignore[reportUninitializedInstanceVariable]
-    _linear_pending_move: tuple[str, float, int] | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _last_action_undoable: bool  # pyright: ignore[reportUninitializedInstanceVariable]
     _create_todoist_modal: CreateTodoistTaskModal  # pyright: ignore[reportUninitializedInstanceVariable]
 
@@ -656,7 +611,6 @@ class StatusDashboard(App[None]):
                 table_class=NotificationsDataTable,
             )
             yield Panel("Todoist (Today)", "todoist", table_class=TodoistDataTable)
-            yield Panel("Linear", "linear", table_class=LinearDataTable)
         yield Footer()
 
     def _setup_table(self, table: DataTable[str | Text]) -> None:
@@ -682,16 +636,11 @@ class StatusDashboard(App[None]):
         self._todoist_restore_key = None
         self._todoist_selected_date = date.today()
         self._todoist_optimistic_tasks = {}
-        self._linear_issues = []
-        self._linear_debounce_handle = None
-        self._linear_viewer_initials = None
         self._gh_notifications = []
         self._goals = []
         self._goals_showing_review = False
         self._goals_review_dismissed = False
         self._goals_week_metrics = None
-        self._linear_team_id = ""
-        self._linear_pending_move = None
         self._last_action_undoable = True
 
         # Pre-install the Todoist create modal so subsequent opens are instant
@@ -720,10 +669,6 @@ class StatusDashboard(App[None]):
         _ = todo.add_columns("#", "!", "", "Time", "#C", "📝", "🔗", "Task")
         self._setup_table(todo)
 
-        lin = self.query_one("#linear-table", LinearDataTable)
-        _ = lin.add_columns("#", "ID", "Title", "Status", "Owner")
-        self._setup_table(lin)
-
         self.refresh_all()
         _ = self.set_interval(60, self.refresh_all)
         _ = self._check_for_updates()
@@ -735,7 +680,6 @@ class StatusDashboard(App[None]):
         _ = self._refresh_review_requests()
         _ = self._refresh_gh_notifications()
         _ = self._refresh_todoist()
-        _ = self._refresh_linear()
 
     @work(exclusive=False)
     async def _check_for_updates(self) -> None:
@@ -1182,42 +1126,6 @@ class StatusDashboard(App[None]):
                 self._restore_cursor_by_key(table, selected_key)
         table.refresh_line_numbers()
 
-    @work(exclusive=False)
-    async def _refresh_linear(self) -> None:
-        issues = await asyncio.to_thread(linear.get_project_issues)
-        self._linear_issues = [
-            i for i in issues if i.state not in ("Done", "Canceled", "Duplicate")
-        ]
-        self._render_linear_table()
-
-    def _render_linear_table(self, preserve_cursor: bool = True) -> None:
-        table = self.query_one("#linear-table", LinearDataTable)
-        selected_key = self._get_selected_row_key(table) if preserve_cursor else None
-
-        _ = table.clear()
-
-        if not self._linear_issues:
-            _ = table.add_row(
-                "", "", Text("No active issues", style="dim italic"), "", ""
-            )
-        else:
-            for issue in self._linear_issues:
-                assignee = issue.assignee_initials or ""
-                title = issue.title[:50] + "…" if len(issue.title) > 50 else issue.title
-                state_display = LINEAR_STATE_SHORT.get(issue.state, issue.state)
-                _ = table.add_row(
-                    "",
-                    issue.identifier,
-                    title,
-                    state_display,
-                    assignee,
-                    key=f"linear:{issue.id}:{issue.team_id}:{issue.url}",
-                )
-
-            if selected_key:
-                self._restore_cursor_by_key(table, selected_key)
-        table.refresh_line_numbers()
-
     def action_refresh(self) -> None:
         self.refresh_all()
         self.notify("Refreshing...")
@@ -1324,9 +1232,6 @@ class StatusDashboard(App[None]):
         action: TodoistCompleteAction
         | TodoistDeferAction
         | TodoistMoveAction
-        | LinearSetStateAction
-        | LinearAssignAction
-        | LinearMoveAction
         | GoalCompleteAction
         | GoalAbandonAction,
     ) -> None:
@@ -1351,30 +1256,6 @@ class StatusDashboard(App[None]):
             )
             if success:
                 _ = self._refresh_todoist()
-
-        elif isinstance(action, LinearSetStateAction):
-            success = await asyncio.to_thread(
-                linear.set_issue_state_by_name,
-                action.issue_id,
-                action.team_id,
-                action.previous_state,
-            )
-            if success:
-                _ = self._refresh_linear()
-
-        elif isinstance(action, LinearAssignAction):
-            success = await asyncio.to_thread(
-                linear.assign_issue, action.issue_id, action.previous_assignee_id
-            )
-            if success:
-                _ = self._refresh_linear()
-
-        elif isinstance(action, LinearMoveAction):
-            success = await asyncio.to_thread(
-                linear.update_sort_order, action.issue_id, action.previous_sort_order
-            )
-            if success:
-                _ = self._refresh_linear()
 
         elif isinstance(action, GoalCompleteAction):
             success = goals_db.uncomplete_goal(action.goal_id)
@@ -1405,10 +1286,7 @@ class StatusDashboard(App[None]):
             return
 
         # Extract URL from key format for other types
-        if key.startswith("linear:"):
-            # Format: "linear:{issue_id}:{team_id}:{url}"
-            url = key.split(":", 3)[3]
-        elif key.startswith("review:"):
+        if key.startswith("review:"):
             # Format: "review:{repo}:{number}:{url}"
             url = key.split(":", 3)[3]
         elif key.startswith("notif:"):
@@ -1460,11 +1338,9 @@ class StatusDashboard(App[None]):
                 _ = self._do_complete_todoist_task(
                     task_id, task_name, removed_task, removed_index
                 )
-        elif focused.id == "linear-table" and key.startswith("linear:"):
-            self.action_set_linear_state("done")
         else:
             self.notify(
-                "Can only complete Todoist tasks or Linear issues", severity="warning"
+                "Can only complete Todoist tasks", severity="warning"
             )
 
     def _get_row_content(self, table: DataTable[str | Text]) -> str:
@@ -1830,273 +1706,6 @@ class StatusDashboard(App[None]):
             return
 
         self.notify("No link found in task", severity="warning")
-
-    def action_set_linear_state(self, state: str) -> None:
-        """Set the selected Linear issue's state."""
-        focused = self.focused
-        if not isinstance(focused, VimDataTable):
-            return
-
-        if focused.id != "linear-table":
-            self.notify("Can only change state on Linear issues", severity="warning")
-            return
-
-        if focused.row_count == 0:
-            return
-
-        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
-        if not cell_key.row_key or not cell_key.row_key.value:
-            return
-
-        key = str(cell_key.row_key.value)
-
-        if not key.startswith("linear:"):
-            return
-
-        # Key format: "linear:{issue_id}:{team_id}:{url}"
-        parts = key.split(":", 3)
-        if len(parts) >= 3:
-            issue_id = parts[1]
-            team_id = parts[2]
-            issue_identifier = self._get_row_identifier(focused)
-
-            # Optimistic update: find issue and update its state
-            issue_to_update: linear.Issue | None = None
-            original_state: str | None = None
-            removed_issue: linear.Issue | None = None
-            removed_index: int = -1
-
-            for idx, issue in enumerate(self._linear_issues):
-                if issue.id == issue_id:
-                    issue_to_update = issue
-                    original_state = issue.state
-                    break
-
-            state_display = linear.STATE_NAME_MAP.get(state, state)
-
-            if issue_to_update is not None:
-                # Check if new state will remove the issue from view
-                if state_display in ("Done", "Canceled", "Duplicate"):
-                    # Remove from list
-                    for idx, issue in enumerate(self._linear_issues):
-                        if issue.id == issue_id:
-                            removed_issue = issue
-                            removed_index = idx
-                            _ = self._linear_issues.pop(idx)
-                            break
-                else:
-                    # Update state in place
-                    issue_to_update.state = state_display
-                self._render_linear_table()
-
-            # Push undo action immediately so 'z' always undoes the right thing
-            undo_action: LinearSetStateAction | None = None
-            if original_state:
-                description = f"Set {issue_identifier or issue_id} to {state_display}"
-                undo_action = LinearSetStateAction(
-                    issue_id=issue_id,
-                    team_id=team_id,
-                    previous_state=original_state,
-                    description=description,
-                )
-                self._undo_stack.push(undo_action)
-                self._last_action_undoable = True
-
-            _ = self._do_set_linear_state(
-                issue_id,
-                team_id,
-                state,
-                removed_issue,
-                removed_index,
-                original_state,
-                undo_action,
-            )
-
-    def _get_row_identifier(self, table: DataTable[str | Text]) -> str:
-        """Get the identifier (second column, after line numbers) from the current row."""
-        if table.row_count == 0:
-            return ""
-        try:
-            row_data = table.get_row_at(table.cursor_row)
-            return str(row_data[1]) if len(row_data) > 1 else ""
-        except Exception:
-            return ""
-
-    @work(exclusive=False)
-    async def _do_set_linear_state(
-        self,
-        issue_id: str,
-        team_id: str,
-        state: str,
-        removed_issue: linear.Issue | None,
-        removed_index: int,
-        original_state: str | None,
-        undo_action: LinearSetStateAction | None,
-    ) -> None:
-        state_display = linear.STATE_NAME_MAP.get(state, state)
-        success = await asyncio.to_thread(
-            linear.set_issue_state, issue_id, team_id, state
-        )
-        if success:
-            self.notify(f"Moved to {state_display}")
-        else:
-            # Pop the undo action we pushed optimistically (if still there)
-            if undo_action is not None:
-                _ = self._undo_stack.pop_if_matches(undo_action)
-            # Rollback: restore original state or re-insert removed issue
-            if removed_issue is not None and removed_index >= 0:
-                self._linear_issues.insert(removed_index, removed_issue)
-                self._render_linear_table()
-            elif original_state is not None:
-                # Find the issue and restore its state
-                for issue in self._linear_issues:
-                    if issue.id == issue_id:
-                        issue.state = original_state
-                        break
-                self._render_linear_table()
-            self.notify(f"Failed to set state to {state_display}", severity="error")
-
-    def _get_selected_linear_issue_id(self) -> str | None:
-        focused = self.focused
-        if not isinstance(focused, VimDataTable) or focused.id != "linear-table":
-            return None
-
-        if focused.row_count == 0:
-            return None
-
-        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
-        if not cell_key.row_key or not cell_key.row_key.value:
-            return None
-
-        key = str(cell_key.row_key.value)
-        if not key.startswith("linear:"):
-            return None
-
-        parts = key.split(":", 3)
-        return parts[1] if len(parts) >= 2 else None
-
-    def action_assign_self_linear(self) -> None:
-        focused = self.focused
-        if not isinstance(focused, VimDataTable) or focused.id != "linear-table":
-            self.notify("Select a Linear issue first", severity="warning")
-            return
-        issue_id = self._get_selected_linear_issue_id()
-        if not issue_id:
-            self.notify("Select a Linear issue first", severity="warning")
-            return
-        issue_identifier = self._get_row_identifier(focused)
-
-        # Optimistic update: find issue and update assignee_initials
-        original_initials: str | None = None
-        for issue in self._linear_issues:
-            if issue.id == issue_id:
-                original_initials = issue.assignee_initials
-                # Use cached initials if available, otherwise use "..." placeholder
-                issue.assignee_initials = self._linear_viewer_initials or "..."
-                break
-        self._render_linear_table()
-
-        _ = self._do_assign_linear_issue(
-            issue_id,
-            assign=True,
-            issue_identifier=issue_identifier,
-            original_initials=original_initials,
-        )
-
-    def action_unassign_linear(self) -> None:
-        focused = self.focused
-        if not isinstance(focused, VimDataTable) or focused.id != "linear-table":
-            self.notify("Select a Linear issue first", severity="warning")
-            return
-        issue_id = self._get_selected_linear_issue_id()
-        if not issue_id:
-            self.notify("Select a Linear issue first", severity="warning")
-            return
-        issue_identifier = self._get_row_identifier(focused)
-
-        # Optimistic update: find issue and clear assignee_initials
-        original_initials: str | None = None
-        for issue in self._linear_issues:
-            if issue.id == issue_id:
-                original_initials = issue.assignee_initials
-                issue.assignee_initials = ""
-                break
-        self._render_linear_table()
-
-        _ = self._do_assign_linear_issue(
-            issue_id,
-            assign=False,
-            issue_identifier=issue_identifier,
-            original_initials=original_initials,
-        )
-
-    @work(exclusive=False)
-    async def _do_assign_linear_issue(
-        self,
-        issue_id: str,
-        assign: bool,
-        issue_identifier: str | None,
-        original_initials: str | None,
-    ) -> None:
-        issue = await asyncio.to_thread(linear.get_issue, issue_id)
-        assignee_raw = issue.get("assignee") if issue else None
-        previous_assignee_id = cast(
-            str | None,
-            cast(dict[str, object], assignee_raw).get("id") if assignee_raw else None,
-        )
-
-        if assign:
-            viewer_id = await asyncio.to_thread(linear.get_viewer_id)
-            if not viewer_id:
-                # Rollback: restore original initials
-                for i in self._linear_issues:
-                    if i.id == issue_id:
-                        i.assignee_initials = original_initials
-                        break
-                self._render_linear_table()
-                self.notify("Failed to get your user ID", severity="error")
-                return
-            assignee_id = viewer_id
-
-            # Fetch and cache viewer initials for future optimistic updates
-            if not self._linear_viewer_initials:
-                team_members = await asyncio.to_thread(linear.get_team_members)
-                for member in team_members:
-                    if member.get("id") == viewer_id:
-                        name = member.get("displayName") or member.get("name")
-                        if name:
-                            self._linear_viewer_initials = linear.get_initials(name)
-                            # Update the optimistic placeholder with real initials
-                            for i in self._linear_issues:
-                                if i.id == issue_id and i.assignee_initials == "...":
-                                    i.assignee_initials = self._linear_viewer_initials
-                            self._render_linear_table()
-                        break
-        else:
-            assignee_id = None
-
-        success = await asyncio.to_thread(linear.assign_issue, issue_id, assignee_id)
-        if success:
-            description = (
-                f"{'Assign' if assign else 'Unassign'} {issue_identifier or issue_id}"
-            )
-            self._undo_stack.push(
-                LinearAssignAction(
-                    issue_id=issue_id,
-                    previous_assignee_id=previous_assignee_id,
-                    description=description,
-                )
-            )
-            self._last_action_undoable = True
-            self.notify("Assigned to you" if assign else "Unassigned")
-        else:
-            # Rollback: restore original initials
-            for i in self._linear_issues:
-                if i.id == issue_id:
-                    i.assignee_initials = original_initials
-                    break
-            self._render_linear_table()
-            self.notify("Failed to update assignment", severity="error")
 
     def action_remove_self_as_reviewer(self) -> None:
         """Remove yourself as a reviewer from the selected PR."""
@@ -2731,173 +2340,6 @@ class StatusDashboard(App[None]):
             url = parts[2]
             if url:
                 _ = webbrowser.open(url)
-
-    def action_create_linear_issue(self) -> None:
-        """Show modal to create a new Linear issue."""
-        # First, get team ID and members
-        _ = self._prepare_linear_issue_modal()
-
-    @work(exclusive=False)
-    async def _prepare_linear_issue_modal(self) -> None:
-        """Load team data and show the Linear issue creation modal."""
-        # Get team ID
-        team_id = await asyncio.to_thread(linear.get_team_id)
-        if not team_id:
-            self.notify("Failed to get team ID", severity="error")
-            return
-
-        # Get team members and viewer ID
-        team_members = await asyncio.to_thread(linear.get_team_members)
-        viewer_id = await asyncio.to_thread(linear.get_viewer_id)
-
-        # Store team_id for later use
-        self._linear_team_id = team_id
-
-        # Show modal
-        _ = self.push_screen(
-            CreateLinearIssueModal(team_members, viewer_id=viewer_id),
-            self._handle_linear_issue_created,
-        )
-
-    def _handle_linear_issue_created(self, result: dict[str, str] | None) -> None:
-        """Handle the result from the Linear issue creation modal."""
-        if result:
-            title = result["title"]
-            state = result["state"]
-            assignee_id = result.get("assignee_id")
-            _ = self._do_create_linear_issue(title, state, assignee_id)
-
-    @work(exclusive=False)
-    async def _do_create_linear_issue(
-        self, title: str, state: str, assignee_id: str | None
-    ) -> None:
-        team_id = self._linear_team_id
-        if not team_id:
-            self.notify("Team ID not available", severity="error")
-            return
-
-        success = await asyncio.to_thread(
-            linear.create_issue, title, team_id, state, assignee_id
-        )
-        if success:
-            self.notify("Issue created!")
-            _ = self._refresh_linear()
-        else:
-            self.notify("Failed to create issue", severity="error")
-
-    def action_move_linear_issue_down(self) -> None:
-        """Move the selected Linear issue down."""
-        self._move_linear_issue(1)
-
-    def action_move_linear_issue_up(self) -> None:
-        """Move the selected Linear issue up."""
-        self._move_linear_issue(-1)
-
-    def _move_linear_issue(self, direction: int) -> None:
-        """Move the selected Linear issue up (-1) or down (+1) within its status group."""
-        focused = self.focused
-        if not isinstance(focused, VimDataTable):
-            return
-
-        if focused.id != "linear-table":
-            self.notify("Can only move Linear issues", severity="warning")
-            return
-
-        if focused.row_count == 0:
-            return
-
-        current_row = focused.cursor_row
-        target_row = current_row + direction
-
-        if target_row < 0 or target_row >= len(self._linear_issues):
-            return
-
-        moved_issue = self._linear_issues[current_row]
-        target_issue = self._linear_issues[target_row]
-
-        if moved_issue.state != target_issue.state:
-            return
-
-        original_sort_order = moved_issue.sort_order
-
-        self._linear_issues[current_row], self._linear_issues[target_row] = (
-            self._linear_issues[target_row],
-            self._linear_issues[current_row],
-        )
-
-        self._render_linear_table(preserve_cursor=False)
-        focused.move_cursor(row=target_row)
-        row_region = focused._get_row_region(target_row)  # pyright: ignore[reportPrivateUsage]
-        _ = focused.scroll_to_region(row_region, center=True, animate=False)
-
-        self._schedule_linear_sync(moved_issue.id, original_sort_order, target_row)
-
-    def _schedule_linear_sync(
-        self, issue_id: str, original_sort_order: float, target_row: int
-    ) -> None:
-        """Schedule a debounced sync of issue order to Linear API."""
-        if self._linear_debounce_handle:
-            self._linear_debounce_handle.stop()
-
-        self._linear_pending_move = (issue_id, original_sort_order, target_row)
-        self._linear_debounce_handle = self.set_timer(0.5, self._flush_linear_order)
-
-    @work(exclusive=False)
-    async def _flush_linear_order(self) -> None:
-        """Send current issue order to Linear API."""
-        self._linear_debounce_handle = None
-
-        if self._linear_pending_move is None:
-            return
-
-        issue_id, original_sort_order, target_row = self._linear_pending_move
-        self._linear_pending_move = None
-
-        if target_row < 0 or target_row >= len(self._linear_issues):
-            return
-
-        moved_issue = self._linear_issues[target_row]
-        same_status_issues = [
-            (idx, i)
-            for idx, i in enumerate(self._linear_issues)
-            if i.state == moved_issue.state
-        ]
-
-        pos_in_group = next(
-            i for i, (idx, _) in enumerate(same_status_issues) if idx == target_row
-        )
-
-        if pos_in_group == 0:
-            new_sort_order = (
-                same_status_issues[1][1].sort_order - 1.0
-                if len(same_status_issues) > 1
-                else 0.0
-            )
-        elif pos_in_group == len(same_status_issues) - 1:
-            new_sort_order = same_status_issues[-2][1].sort_order + 1.0
-        else:
-            prev_order = same_status_issues[pos_in_group - 1][1].sort_order
-            next_order = same_status_issues[pos_in_group + 1][1].sort_order
-            new_sort_order = (prev_order + next_order) / 2.0
-
-        self._linear_issues[target_row].sort_order = new_sort_order
-
-        success = await asyncio.to_thread(
-            linear.update_sort_order, issue_id, new_sort_order
-        )
-        if success:
-            issue = self._linear_issues[target_row]
-            self._undo_stack.push(
-                LinearMoveAction(
-                    issue_id=issue_id,
-                    previous_sort_order=original_sort_order,
-                    description=f"Move {issue.identifier}",
-                )
-            )
-            self._last_action_undoable = True
-        else:
-            self.notify("Failed to save issue order", severity="error")
-            _ = self._refresh_linear()
 
     def action_create_goal(self) -> None:
         """Show modal to create a new weekly goal."""

@@ -72,6 +72,7 @@ def _load_hidden_review_requests() -> set[tuple[str, int]]:
 
 HIDDEN_REVIEW_REQUESTS = _load_hidden_review_requests()
 
+
 def _load_blocked_review_teams() -> set[str]:
     """Load blocked teams from BLOCKED_REVIEW_TEAMS env var (JSON array of team slugs)."""
     raw = os.environ.get("BLOCKED_REVIEW_TEAMS", "[]")
@@ -1339,9 +1340,7 @@ class StatusDashboard(App[None]):
                     task_id, task_name, removed_task, removed_index
                 )
         else:
-            self.notify(
-                "Can only complete Todoist tasks", severity="warning"
-            )
+            self.notify("Can only complete Todoist tasks", severity="warning")
 
     def _get_row_content(self, table: DataTable[str | Text]) -> str:
         """Get the content/title column text from the current row."""

@@ -36,6 +36,7 @@ class PullRequest:
     ci_status: str | None = None
     unresolved_comment_count: int = 0
     reviewers: list[str] | None = None
+    assignees: list[str] | None = None
 
 
 @dataclass
@@ -155,6 +156,11 @@ query {{
                 slug
               }}
             }}
+          }}
+        }}
+        assignees(first: 10) {{
+          nodes {{
+            login
           }}
         }}
       }}
@@ -335,6 +341,12 @@ def _parse_pr_node(pr: _JsonDict) -> PullRequest | None:
         if name and name.lower() not in BOT_REVIEWERS:
             reviewers.append(name)
 
+    assignees_wrapper = _get_dict(pr, "assignees")
+    assignee_nodes = _get_list(assignees_wrapper, "nodes")
+    assignees: list[str] = [
+        _get_str(a, "login") for a in assignee_nodes if _get_str(a, "login")
+    ]
+
     repo_info = _get_dict(pr, "repository")
     return PullRequest(
         number=_get_int(pr, "number"),
@@ -349,6 +361,7 @@ def _parse_pr_node(pr: _JsonDict) -> PullRequest | None:
         ci_status=ci_state,
         unresolved_comment_count=unresolved_count,
         reviewers=reviewers,
+        assignees=assignees,
     )
 
 
@@ -372,8 +385,12 @@ def _run_my_prs_query(search_query: str) -> list[PullRequest]:
 
 
 def get_my_prs(orgs: list[str] | None = None) -> list[PullRequest]:
-    """Get open PRs authored by or assigned to the current user with review status."""
+    """Get open PRs that are assigned to me, or authored by me with no assignee.
+
+    Excludes PRs that I authored but that have been assigned to someone else.
+    """
     owners = orgs or _get_orgs()
+    my_username = get_my_username()
     prs_by_url: dict[str, PullRequest] = {}
 
     def add_prs(search_query: str) -> None:
@@ -388,7 +405,18 @@ def get_my_prs(orgs: list[str] | None = None) -> list[PullRequest]:
         add_prs(f"author:@me state:open repo:{repo} type:pr")
         add_prs(f"assignee:@me state:open repo:{repo} type:pr")
 
-    all_prs = list(prs_by_url.values())
+    def _should_include(pr: PullRequest) -> bool:
+        assignees = pr.assignees or []
+        # Keep if assigned to me
+        if my_username and my_username in assignees:
+            return True
+        # Keep if no one is assigned (PR authored by me with no assignee)
+        if not assignees:
+            return True
+        # Exclude: has assignees but I'm not one of them
+        return False
+
+    all_prs = [pr for pr in prs_by_url.values() if _should_include(pr)]
     all_prs.sort(key=lambda pr: pr.created_at, reverse=True)
     return all_prs
 

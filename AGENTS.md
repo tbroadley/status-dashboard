@@ -67,3 +67,24 @@ Run the lightweight unittest coverage with:
 ```bash
 uv run python -m unittest discover
 ```
+
+### Visual Testing
+
+For UI/CSS changes, take a screenshot before pushing to verify the layout:
+```python
+import asyncio
+from status_dashboard.app import StatusDashboard
+
+async def main():
+    app = StatusDashboard()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.save_screenshot("/tmp/status-dashboard.svg")
+
+asyncio.run(main())
+```
+Then convert to PNG and view the image to confirm the layout looks correct.
+
+## Gotchas
+
+- Textual CSS does not support `max-height: none` or other keyword values for scalar properties. Use a large percentage like `max-height: 100%` instead.

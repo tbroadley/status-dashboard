@@ -561,7 +561,7 @@ class StatusDashboard(App[None]):
 
     #todoist-table {
         height: 1fr;
-        max-height: none;
+        max-height: 100%;
     }
 
     Footer {

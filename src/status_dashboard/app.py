@@ -554,6 +554,16 @@ class StatusDashboard(App[None]):
         overflow-x: hidden;
     }
 
+    #todoist {
+        height: 1fr;
+        min-height: 6;
+    }
+
+    #todoist-table {
+        height: 1fr;
+        max-height: none;
+    }
+
     Footer {
         dock: bottom;
         height: 2;

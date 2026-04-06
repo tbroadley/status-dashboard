@@ -507,7 +507,7 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, object] | None]):
 
     #estimate-inputs-container {
         height: auto;
-        max-height: 10;
+        max-height: 20;
         margin-bottom: 1;
     }
 
@@ -597,7 +597,7 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, object] | None]):
                 yield Input(placeholder="Edit goal", id="edit-input")
 
             yield Label("Time estimates (per goal):")
-            yield Vertical(id="estimate-inputs-container")
+            yield VerticalScroll(id="estimate-inputs-container")
 
             with Horizontal(id="totals-row"):
                 yield Label("Totals:", id="totals-label")
@@ -632,7 +632,7 @@ class WeeklyGoalsSetupModal(ModalScreen[dict[str, object] | None]):
                 )
 
     async def _refresh_estimate_inputs(self) -> None:
-        container = self.query_one("#estimate-inputs-container", Vertical)
+        container = self.query_one("#estimate-inputs-container", VerticalScroll)
         await container.remove_children()
 
         if not self.goals:

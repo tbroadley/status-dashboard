@@ -532,12 +532,11 @@ class StatusDashboard(App[None]):
 
     #goals {
         height: auto;
-        max-height: 8;
+        min-height: 8;
     }
 
     #goals-table {
         height: auto;
-        max-height: 5;
     }
 
     .panel-title {

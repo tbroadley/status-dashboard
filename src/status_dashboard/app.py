@@ -9,7 +9,7 @@ import sys
 import uuid
 import webbrowser
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from itertools import groupby
 from pathlib import Path
 from typing import ClassVar, TypeAlias, cast, override
@@ -25,6 +25,7 @@ from textual.timer import Timer  # used for cast of debounce handles
 from textual.widgets import DataTable, Footer as TextualFooter, Static
 from textual.widgets._footer import FooterKey, FooterLabel, KeyGroup
 
+from status_dashboard import notifications
 from status_dashboard.clients import github, todoist
 from status_dashboard.db import goals as goals_db
 from status_dashboard.undo import (
@@ -595,6 +596,8 @@ class StatusDashboard(App[None]):
     _todoist_restore_key: str | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_selected_date: date  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_optimistic_tasks: dict[str, todoist.Task]  # pyright: ignore[reportUninitializedInstanceVariable]
+    _todoist_notified: set[str]  # pyright: ignore[reportUninitializedInstanceVariable]
+    _todoist_notify_seeded: bool  # pyright: ignore[reportUninitializedInstanceVariable]
 
     _gh_notifications: list[github.Notification]  # pyright: ignore[reportUninitializedInstanceVariable]
     _goals: list[goals_db.Goal]  # pyright: ignore[reportUninitializedInstanceVariable]
@@ -646,6 +649,8 @@ class StatusDashboard(App[None]):
         self._todoist_restore_key = None
         self._todoist_selected_date = date.today()
         self._todoist_optimistic_tasks = {}
+        self._todoist_notified = set()
+        self._todoist_notify_seeded = False
         self._gh_notifications = []
         self._goals = []
         self._goals_showing_review = False
@@ -683,6 +688,8 @@ class StatusDashboard(App[None]):
         _ = self.set_interval(60, self.refresh_all)
         _ = self._check_for_updates()
         _ = self.set_interval(30 * 60, self._check_for_updates)
+        _ = self._check_todoist_due_times()
+        _ = self.set_interval(60, self._check_todoist_due_times)
 
     def refresh_all(self) -> None:
         self._refresh_goals()
@@ -1024,6 +1031,44 @@ class StatusDashboard(App[None]):
         self._todoist_tasks = tasks
         self._update_todoist_panel_title()
         self._render_todoist_table()
+
+    @work(exclusive=False)
+    async def _check_todoist_due_times(self) -> None:
+        """Notify when a task due today reaches its due time.
+
+        Fetches today's tasks regardless of the selected date. On the first run,
+        tasks already past their due time are recorded silently so the user isn't
+        spammed about earlier tasks when the app starts. After that, a desktop
+        notification fires once per task as its due time arrives.
+        """
+        today = date.today()
+        today_str = today.isoformat()
+        tasks = await asyncio.to_thread(todoist.get_tasks_for_date, today)
+        now = datetime.now()
+
+        for task in tasks:
+            if task.due_date != today_str or not task.due_time:
+                continue
+
+            hour, minute = (int(part) for part in task.due_time.split(":"))
+            due_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if due_dt > now:
+                continue
+
+            notify_key = f"{task.id}:{task.due_date}"
+            if notify_key in self._todoist_notified:
+                continue
+            self._todoist_notified.add(notify_key)
+
+            if self._todoist_notify_seeded:
+                _ = await asyncio.to_thread(
+                    notifications.send_desktop_notification,
+                    "Todoist task due",
+                    task.content,
+                    "Glass",
+                )
+
+        self._todoist_notify_seeded = True
 
     def _update_todoist_panel_title(self) -> None:
         panel = self.query_one("#todoist", Panel)

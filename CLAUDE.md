@@ -51,6 +51,11 @@ uv sync                   # Install dependencies
 uv run status-dashboard   # Run the app
 ```
 
+Run tests (stdlib `unittest`, not pytest):
+```bash
+uv run python -m unittest discover -s tests
+```
+
 Before committing:
 ```bash
 uv run ruff check --fix .

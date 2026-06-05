@@ -87,6 +87,15 @@ def _load_blocked_review_teams() -> set[str]:
 BLOCKED_REVIEW_TEAMS = _load_blocked_review_teams()
 
 
+def _load_due_notifications_enabled() -> bool:
+    """Whether to send desktop notifications when a Todoist task's due time arrives."""
+    raw = os.environ.get("TODOIST_DUE_NOTIFICATIONS", "true")
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+TODOIST_DUE_NOTIFICATIONS = _load_due_notifications_enabled()
+
+
 def _setup_logging() -> None:
     """Configure logging to stderr and a rotating log file."""
     xdg_state = os.environ.get("XDG_STATE_HOME")
@@ -688,8 +697,9 @@ class StatusDashboard(App[None]):
         _ = self.set_interval(60, self.refresh_all)
         _ = self._check_for_updates()
         _ = self.set_interval(30 * 60, self._check_for_updates)
-        _ = self._check_todoist_due_times()
-        _ = self.set_interval(60, self._check_todoist_due_times)
+        if TODOIST_DUE_NOTIFICATIONS:
+            _ = self._check_todoist_due_times()
+            _ = self.set_interval(60, self._check_todoist_due_times)
 
     def refresh_all(self) -> None:
         self._refresh_goals()

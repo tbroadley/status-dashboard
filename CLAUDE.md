@@ -40,6 +40,7 @@ Environment variables (`.env` or `$XDG_CONFIG_HOME/status-dashboard/.env`):
 - `GITHUB_ORG` - Optional single organization (deprecated, use `GITHUB_ORGS`; defaults to METR)
 - `GITHUB_EXTRA_PR_REPOS` - Optional comma-separated list of extra repos to show authored or assigned PRs from (defaults to `ukgovernmentbeis/inspect_ai,meridianlabs-ai/inspect_scout`)
 - `HIDDEN_REVIEW_REQUESTS` - Optional JSON array of [repo, pr_number]
+- `TODOIST_DUE_NOTIFICATIONS` - Optional, enables desktop notifications when a task's due time arrives (default on; set to `false`/`0`/`off` to disable)
 
 Logs: `$XDG_STATE_HOME/status-dashboard/status-dashboard.log` (rotating, 1MB, 3 backups)
 

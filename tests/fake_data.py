@@ -213,7 +213,7 @@ def fake_linear_issues() -> list[linear.Issue]:
             state="Todo",
             url="https://linear.app/acme/issue/ENG-315",
             team_id="team1",
-            assignee_initials=None,
+            assignee_initials="TB",
             sort_order=2.0,
         ),
         linear.Issue(
@@ -223,7 +223,7 @@ def fake_linear_issues() -> list[linear.Issue]:
             state="Todo",
             url="https://linear.app/acme/issue/ENG-320",
             team_id="team1",
-            assignee_initials="AK",
+            assignee_initials="TB",
             sort_order=3.0,
         ),
         linear.Issue(
@@ -233,6 +233,7 @@ def fake_linear_issues() -> list[linear.Issue]:
             state="Backlog",
             url="https://linear.app/acme/issue/ENG-280",
             team_id="team1",
+            assignee_initials="TB",
             sort_order=5.0,
         ),
     ]

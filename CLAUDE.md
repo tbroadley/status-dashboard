@@ -42,6 +42,9 @@ Environment variables (`.env` or `$XDG_CONFIG_HOME/status-dashboard/.env`):
 - `HIDDEN_REVIEW_REQUESTS` - Optional JSON array of [repo, pr_number]
 - `TODOIST_DUE_NOTIFICATIONS` - Optional, enables desktop notifications when a task's due time arrives (default on; set to `false`/`0`/`off` to disable)
 
+App-managed state (not env vars):
+- Hidden PRs: `$XDG_CONFIG_HOME/status-dashboard/hidden_prs.json` — JSON array of `[repo, pr_number]`. PRs hidden from the My PRs panel via the `H` keybinding. Delete entries (or the file) to un-hide.
+
 Logs: `$XDG_STATE_HOME/status-dashboard/status-dashboard.log` (rotating, 1MB, 3 backups)
 
 ## Development

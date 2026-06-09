@@ -77,6 +77,37 @@ def _load_hidden_review_requests() -> set[tuple[str, int]]:
 
 HIDDEN_REVIEW_REQUESTS = _load_hidden_review_requests()
 
+
+def _hidden_prs_file() -> Path:
+    """Path to the JSON file storing PRs permanently hidden from My PRs."""
+    return _get_config_dir() / "hidden_prs.json"
+
+
+def _load_hidden_prs() -> set[tuple[str, int]]:
+    """Load permanently hidden PRs (JSON array of [repo, pr_number])."""
+    try:
+        raw = _hidden_prs_file().read_text()
+        items = cast(list[list[str | int]], json.loads(raw))
+        return {(str(repo), int(pr_num)) for repo, pr_num in items}
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        return set()
+
+
+def _save_hidden_prs(hidden: set[tuple[str, int]]) -> bool:
+    """Persist the set of hidden PRs to disk. Returns True on success."""
+    try:
+        path = _hidden_prs_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = sorted([repo, num] for repo, num in hidden)
+        _ = path.write_text(json.dumps(payload, indent=2))
+        return True
+    except OSError:
+        _logger.warning("Failed to save hidden PRs", exc_info=True)
+        return False
+
+
+HIDDEN_PRS = _load_hidden_prs()
+
 # Shorten Linear state display names to fit column width
 LINEAR_STATE_SHORT = {
     "In Progress": "progress",
@@ -415,6 +446,7 @@ class MyPRsDataTable(VimDataTable):
         Binding("m", "app.merge_pr", "Merge"),
         Binding("x", "app.close_pr", "Close"),
         Binding("c", "app.copy_pr_link", "Copy Link"),
+        Binding("H", "app.hide_pr", "Hide"),
     ]
 
 
@@ -927,12 +959,16 @@ class StatusDashboard(App[None]):
 
         _ = table.clear()
 
-        if not self._my_prs:
+        visible_prs = [
+            pr for pr in self._my_prs if (pr.repository, pr.number) not in HIDDEN_PRS
+        ]
+
+        if not visible_prs:
             _ = table.add_row(
                 "", "", Text("No open PRs", style="dim italic"), "", "", "", "", ""
             )
         else:
-            for pr in self._my_prs:
+            for pr in visible_prs:
                 if pr.is_draft:
                     status = "draft"
                 elif pr.is_approved:
@@ -2375,6 +2411,46 @@ class StatusDashboard(App[None]):
                 self._my_prs.insert(removed_index, removed_pr)
                 self._render_my_prs_table()
             self.notify("Failed to close PR", severity="error")
+
+    def action_hide_pr(self) -> None:
+        """Permanently hide the selected PR from the My PRs view."""
+        focused = self.focused
+        if not isinstance(focused, VimDataTable):
+            return
+
+        if focused.id != "my-prs-table":
+            self.notify("Can only hide from My PRs", severity="warning")
+            return
+
+        if focused.row_count == 0:
+            return
+
+        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
+        if not cell_key.row_key or not cell_key.row_key.value:
+            return
+
+        url = str(cell_key.row_key.value)
+
+        pr = next((p for p in self._my_prs if p.url == url), None)
+        if not pr:
+            return
+
+        key = (pr.repository, pr.number)
+        if key in HIDDEN_PRS:
+            return
+
+        # Optimistic update: hide immediately, then persist.
+        HIDDEN_PRS.add(key)
+        self._render_my_prs_table()
+        self._last_action_undoable = False
+
+        if _save_hidden_prs(HIDDEN_PRS):
+            self.notify(f"Hid PR #{pr.number}")
+        else:
+            # Rollback: un-hide and re-render on persistence failure.
+            HIDDEN_PRS.discard(key)
+            self._render_my_prs_table()
+            self.notify("Failed to hide PR", severity="error")
 
     def action_copy_pr_link(self) -> None:
         """Copy the selected PR's URL to the clipboard."""

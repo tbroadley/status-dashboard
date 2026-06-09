@@ -81,6 +81,8 @@ HIDDEN_REVIEW_REQUESTS = _load_hidden_review_requests()
 LINEAR_STATE_SHORT = {
     "In Progress": "progress",
     "In Review": "review",
+    "Todo": "todo",
+    "Backlog": "backlog",
 }
 
 

@@ -980,12 +980,15 @@ class StatusDashboard(App[None]):
                 else:
                     status = "waiting"
 
-                ci_display = {
-                    "SUCCESS": "pass",
-                    "FAILURE": "fail",
-                    "PENDING": "...",
-                    "EXPECTED": "...",
-                }.get(pr.ci_status or "", "")
+                if pr.mergeable == "CONFLICTING":
+                    ci_display = "conflict"
+                else:
+                    ci_display = {
+                        "SUCCESS": "pass",
+                        "FAILURE": "fail",
+                        "PENDING": "...",
+                        "EXPECTED": "...",
+                    }.get(pr.ci_status or "", "")
 
                 comment_display = (
                     str(pr.unresolved_comment_count)

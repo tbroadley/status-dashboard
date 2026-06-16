@@ -48,6 +48,7 @@ def fake_prs() -> list[github.PullRequest]:
             created_at=now - timedelta(days=5),
             has_review=True,
             ci_status="SUCCESS",
+            mergeable="CONFLICTING",
             reviewers=["dave"],
         ),
     ]

@@ -34,6 +34,7 @@ class PullRequest:
     needs_response: bool = False
     has_review: bool = False
     ci_status: str | None = None
+    mergeable: str | None = None
     unresolved_comment_count: int = 0
     reviewers: list[str] | None = None
     assignees: list[str] | None = None
@@ -120,6 +121,7 @@ query {{
         url
         isDraft
         createdAt
+        mergeable
         repository {{
           nameWithOwner
         }}
@@ -359,6 +361,7 @@ def _parse_pr_node(pr: _JsonDict) -> PullRequest | None:
         needs_response=has_changes_requested or has_comments,
         has_review=len(human_reviews) > 0,
         ci_status=ci_state,
+        mergeable=_get_str(pr, "mergeable") or None,
         unresolved_comment_count=unresolved_count,
         reviewers=reviewers,
         assignees=assignees,

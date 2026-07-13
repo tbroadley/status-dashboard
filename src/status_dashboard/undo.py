@@ -48,18 +48,6 @@ class LinearMoveAction(UndoAction):
     action_type: str = "linear_move"
 
 
-@dataclass
-class GoalCompleteAction(UndoAction):
-    goal_id: str = ""
-    action_type: str = "goal_complete"
-
-
-@dataclass
-class GoalAbandonAction(UndoAction):
-    goal_id: str = ""
-    action_type: str = "goal_abandon"
-
-
 class UndoStack:
     _max_size: int
 

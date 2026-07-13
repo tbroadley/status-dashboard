@@ -27,10 +27,7 @@ from textual.widgets._footer import FooterKey, FooterLabel, KeyGroup
 
 from status_dashboard import notifications
 from status_dashboard.clients import github, linear, todoist
-from status_dashboard.db import goals as goals_db
 from status_dashboard.undo import (
-    GoalAbandonAction,
-    GoalCompleteAction,
     LinearAssignAction,
     LinearMoveAction,
     LinearSetStateAction,
@@ -41,12 +38,9 @@ from status_dashboard.undo import (
 )
 from status_dashboard.widgets.create_modals import (
     ConfirmationModal,
-    CreateGoalModal,
     CreateLinearIssueModal,
     CreateTodoistTaskModal,
     EditTodoistTaskModal,
-    WeeklyGoalsSetupModal,
-    WeeklyReviewModal,
 )
 
 
@@ -494,22 +488,6 @@ class LinearDataTable(VimDataTable):
     ]
 
 
-class GoalsDataTable(VimDataTable):
-    """DataTable for weekly goals."""
-
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("a", "app.create_goal", "Add Goal"),
-        Binding("c", "app.complete_goal", "Complete"),
-        Binding("x", "app.abandon_goal", "Abandon"),
-        Binding("d", "app.delete_goal", "Delete"),
-        Binding("e", "app.open_goals_setup", "Edit Week"),
-        Binding("J", "app.move_goal_down", "Move Down", show=False),
-        Binding("K", "app.move_goal_up", "Move Up", show=False),
-        Binding("shift+down", "app.move_goal_down", "Move Down"),
-        Binding("shift+up", "app.move_goal_up", "Move Up"),
-    ]
-
-
 class UpdateBanner(Static):
     """Banner showing when a new version is available."""
 
@@ -604,17 +582,8 @@ class StatusDashboard(App[None]):
         margin-bottom: 1;
     }
 
-    #goals {
-        height: auto;
-        min-height: 8;
-    }
-
-    #goals-table {
-        height: auto;
-    }
-
     #linear {
-        height: 1fr;
+        height: auto;
     }
 
     .panel-title {
@@ -642,8 +611,8 @@ class StatusDashboard(App[None]):
     }
 
     #linear-table {
-        height: 1fr;
-        max-height: 100%;
+        height: auto;
+        max-height: 12;
         overflow-x: hidden;
     }
 
@@ -685,10 +654,7 @@ class StatusDashboard(App[None]):
     _linear_debounce_handle: Timer | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _linear_viewer_initials: str | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _gh_notifications: list[github.Notification]  # pyright: ignore[reportUninitializedInstanceVariable]
-    _goals: list[goals_db.Goal]  # pyright: ignore[reportUninitializedInstanceVariable]
-    _goals_showing_review: bool  # pyright: ignore[reportUninitializedInstanceVariable]
-    _goals_review_dismissed: bool  # pyright: ignore[reportUninitializedInstanceVariable]
-    _goals_week_metrics: goals_db.WeekMetrics | None  # pyright: ignore[reportUninitializedInstanceVariable]
+    _todoist_projects: list[todoist.Project]  # pyright: ignore[reportUninitializedInstanceVariable]
     _linear_team_id: str  # pyright: ignore[reportUninitializedInstanceVariable]
     _linear_pending_move: tuple[str, float, int] | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _last_action_undoable: bool  # pyright: ignore[reportUninitializedInstanceVariable]
@@ -697,7 +663,6 @@ class StatusDashboard(App[None]):
     @override
     def compose(self) -> ComposeResult:
         yield UpdateBanner(id="update-banner")
-        yield Panel("Weekly Goals", "goals", table_class=GoalsDataTable)
         with VerticalScroll(can_focus=False):
             yield Panel("My PRs", "my-prs", table_class=MyPRsDataTable)
             yield Panel(
@@ -743,10 +708,7 @@ class StatusDashboard(App[None]):
         self._linear_debounce_handle = None
         self._linear_viewer_initials = None
         self._gh_notifications = []
-        self._goals = []
-        self._goals_showing_review = False
-        self._goals_review_dismissed = False
-        self._goals_week_metrics = None
+        self._todoist_projects = []
         self._linear_team_id = ""
         self._linear_pending_move = None
         self._last_action_undoable = True
@@ -754,11 +716,6 @@ class StatusDashboard(App[None]):
         # Pre-install the Todoist create modal so subsequent opens are instant
         self._create_todoist_modal = CreateTodoistTaskModal()
         self.install_screen(self._create_todoist_modal, "create-todoist-task")  # pyright: ignore[reportUnknownMemberType]
-
-        # Set up goals table
-        goals_table = self.query_one("#goals-table", GoalsDataTable)
-        _ = goals_table.add_columns("#", "", "Goal")
-        self._setup_table(goals_table)
 
         # Set up table columns - auto-sized based on content
         my_prs = self.query_one("#my-prs-table", MyPRsDataTable)
@@ -790,11 +747,11 @@ class StatusDashboard(App[None]):
             _ = self.set_interval(60, self._check_todoist_due_times)
 
     def refresh_all(self) -> None:
-        self._refresh_goals()
         _ = self._refresh_my_prs()
         _ = self._refresh_review_requests()
         _ = self._refresh_gh_notifications()
         _ = self._refresh_todoist()
+        _ = self._refresh_todoist_projects()
         _ = self._refresh_linear()
 
     @work(exclusive=False)
@@ -812,140 +769,10 @@ class StatusDashboard(App[None]):
             banner = self.query_one("#update-banner", UpdateBanner)
             banner.show_update(remote_commit[:7])
 
-    def _refresh_goals(self) -> None:
-        """Refresh the goals table based on current week/review state."""
-        today = date.today()
-        is_monday = today.weekday() == 0
-        this_week = goals_db.get_week_start(today)
-        this_week_goals = goals_db.get_goals_for_week(this_week)
-
-        # Load current week metrics
-        self._goals_week_metrics = goals_db.get_week_metrics(this_week)
-
-        # Auto-show review modal on Monday if no current week goals and not dismissed
-        if is_monday and not this_week_goals and not self._goals_review_dismissed:
-            last_week = this_week - timedelta(days=7)
-            last_week_goals = goals_db.get_goals_for_week(last_week)
-            if last_week_goals:
-                # Auto-push the review modal
-                last_week_metrics = goals_db.get_week_metrics(last_week)
-                self._goals_review_dismissed = True  # Prevent re-showing
-                _ = self.push_screen(
-                    WeeklyReviewModal(last_week, last_week_goals, last_week_metrics),
-                    self._handle_review_complete,
-                )
-
-        # Show review only if Monday AND no goals yet for this week
-        if is_monday and not this_week_goals:
-            last_week = this_week - timedelta(days=7)
-            self._goals = goals_db.get_goals_for_week(last_week)
-            self._goals_showing_review = True
-        else:
-            self._goals = this_week_goals
-            self._goals_showing_review = False
-
-        self._render_goals_table()
-
-    def _render_goals_table(self) -> None:
-        """Render the goals table."""
-        table = self.query_one("#goals-table", GoalsDataTable)
-        selected_key = self._get_selected_row_key(table)
-        _ = table.clear()
-
-        # Update panel title
-        panel = self.query_one("#goals", Panel)
-        title_widget = panel.query_one(".panel-title", Static)
-
-        if self._goals_showing_review:
-            title_widget.update(
-                "Weekly Goals (Last Week Review - press 'e' to set up this week)"
-            )
-            if not self._goals:
-                _ = table.add_row(
-                    "", "", Text("No goals from last week", style="dim italic")
-                )
-            else:
-                for goal in self._goals:
-                    checkbox = "[x]" if goal.is_completed else "[ ]"
-                    content = (
-                        goal.content[:60] + "…"
-                        if len(goal.content) > 60
-                        else goal.content
-                    )
-                    if goal.is_abandoned:
-                        text = Text(f"{checkbox} {content}", style="strike dim")
-                    else:
-                        text = Text(f"{checkbox} {content}")
-                    _ = table.add_row(
-                        "",
-                        "",
-                        text,
-                        key=f"goal:{goal.id}",
-                    )
-                # Add prompt to create new goals
-                _ = table.add_row(
-                    "",
-                    "",
-                    Text("Press 'a' to add goals for this week", style="dim italic"),
-                    key="goal:prompt",
-                )
-        else:
-            # Compute totals from per-goal estimates (non-abandoned, non-completed)
-            active_goals = [
-                g for g in self._goals if not g.is_completed and not g.is_abandoned
-            ]
-            total_h2 = sum(g.h2_2025_estimate or 0 for g in active_goals)
-            total_pred = sum(g.predicted_time or 0 for g in active_goals)
-
-            # Build title with computed totals
-            title = "Weekly Goals"
-            if total_h2 > 0 or total_pred > 0:
-                estimates: list[str] = []
-                if total_h2 > 0:
-                    estimates.append(f"Est: {total_h2:.1f}h")
-                if total_pred > 0:
-                    estimates.append(f"Pred: {total_pred:.1f}h")
-                title = f"Weekly Goals ({' / '.join(estimates)})"
-            title_widget.update(title)
-
-            # Show non-completed goals (including abandoned ones with strikethrough)
-            visible_goals = [g for g in self._goals if not g.is_completed]
-            if not self._goals:
-                _ = table.add_row(
-                    "",
-                    "",
-                    Text("No goals yet - press 'a' to add", style="dim italic"),
-                )
-            elif not visible_goals:
-                # All goals complete!
-                _ = table.add_row(
-                    "",
-                    "",
-                    Text("All goals complete! Good job!", style="bold green"),
-                )
-            else:
-                for goal in visible_goals:
-                    content = (
-                        goal.content[:60] + "…"
-                        if len(goal.content) > 60
-                        else goal.content
-                    )
-                    if goal.is_abandoned:
-                        text = Text(content, style="strike dim")
-                        checkbox = "[-]"
-                    else:
-                        text = Text(content)
-                        checkbox = "[ ]"
-                    _ = table.add_row(
-                        "",
-                        checkbox,
-                        text,
-                        key=f"goal:{goal.id}",
-                    )
-
-        if selected_key:
-            self._restore_cursor_by_key(table, selected_key)
-        table.refresh_line_numbers()
+    @work(exclusive=False)
+    async def _refresh_todoist_projects(self) -> None:
+        """Load Todoist projects in the background so the edit modal opens instantly."""
+        self._todoist_projects = await asyncio.to_thread(todoist.get_projects)
 
     @work(exclusive=False)
     async def _refresh_my_prs(self) -> None:
@@ -1431,9 +1258,7 @@ class StatusDashboard(App[None]):
         | TodoistMoveAction
         | LinearSetStateAction
         | LinearAssignAction
-        | LinearMoveAction
-        | GoalCompleteAction
-        | GoalAbandonAction,
+        | LinearMoveAction,
     ) -> None:
         """Execute the undo operation for a given action."""
         success = False
@@ -1474,22 +1299,12 @@ class StatusDashboard(App[None]):
             if success:
                 _ = self._refresh_linear()
 
-        elif isinstance(action, LinearMoveAction):
+        else:
             success = await asyncio.to_thread(
                 linear.update_sort_order, action.issue_id, action.previous_sort_order
             )
             if success:
                 _ = self._refresh_linear()
-
-        elif isinstance(action, GoalCompleteAction):
-            success = goals_db.uncomplete_goal(action.goal_id)
-            if success:
-                self._refresh_goals()
-
-        else:
-            success = goals_db.unabandon_goal(action.goal_id)
-            if success:
-                self._refresh_goals()
 
         if success:
             self.notify(f"Undid: {action.description}")
@@ -1506,7 +1321,7 @@ class StatusDashboard(App[None]):
             parts = key.split(":", 2)
             if len(parts) >= 2:
                 task_id = parts[1]
-                _ = self._prepare_edit_todoist_task(task_id)
+                self._edit_todoist_task(task_id)
             return
 
         # Extract URL from key format for other types
@@ -2781,30 +2596,37 @@ class StatusDashboard(App[None]):
         parts = key.split(":", 2)
         if len(parts) >= 2:
             task_id = parts[1]
+            self._edit_todoist_task(task_id)
+
+    def _edit_todoist_task(self, task_id: str) -> None:
+        """Open the edit modal for a task.
+
+        Uses the task data already loaded during the last refresh (content,
+        description, due string, project) plus the background-cached project
+        list, so the modal opens instantly with no network request. Falls back
+        to fetching from the API only when the task isn't in memory.
+        """
+        task = next((t for t in self._todoist_tasks if t.id == task_id), None)
+        if task is None:
             _ = self._prepare_edit_todoist_task(task_id)
-
-    @work(exclusive=False)
-    async def _prepare_edit_todoist_task(self, task_id: str) -> None:
-        """Load task data and projects, then show edit modal."""
-        task_data = await asyncio.to_thread(todoist.get_task, task_id)
-        if not task_data:
-            self.notify("Failed to load task", severity="error")
             return
-
-        projects = await asyncio.to_thread(todoist.get_projects)
-
-        content = cast(str, task_data.get("content", ""))
-        description = cast(str, task_data.get("description", ""))
-        project_id = cast(str | None, task_data.get("project_id"))
-        due_raw = task_data.get("due")
-        due_string = (
-            cast(str, cast(dict[str, object], due_raw).get("string", ""))
-            if due_raw
-            else ""
+        self._open_edit_todoist_modal(
+            task_id=task.id,
+            content=task.content,
+            description=task.description,
+            project_id=task.project_id,
+            due_string=task.due_string or "",
         )
 
-        project_options = [(p.name, p.id) for p in projects]
-
+    def _open_edit_todoist_modal(
+        self,
+        task_id: str,
+        content: str,
+        description: str,
+        project_id: str | None,
+        due_string: str,
+    ) -> None:
+        project_options = [(p.name, p.id) for p in self._todoist_projects]
         _ = self.push_screen(
             EditTodoistTaskModal(
                 task_id=task_id,
@@ -2815,6 +2637,34 @@ class StatusDashboard(App[None]):
                 projects=project_options,
             ),
             self._handle_todoist_task_edited,
+        )
+
+    @work(exclusive=False)
+    async def _prepare_edit_todoist_task(self, task_id: str) -> None:
+        """Fallback: fetch task data from the API, then show the edit modal."""
+        task_data = await asyncio.to_thread(todoist.get_task, task_id)
+        if not task_data:
+            self.notify("Failed to load task", severity="error")
+            return
+
+        if not self._todoist_projects:
+            self._todoist_projects = await asyncio.to_thread(todoist.get_projects)
+
+        content = cast(str, task_data.get("content", ""))
+        description = cast(str, task_data.get("description", ""))
+        project_id = cast(str | None, task_data.get("project_id"))
+        due_raw = task_data.get("due")
+        due_string = (
+            cast(str, cast(dict[str, object], due_raw).get("string", ""))
+            if due_raw
+            else ""
+        )
+        self._open_edit_todoist_modal(
+            task_id=task_id,
+            content=content,
+            description=description,
+            project_id=project_id,
+            due_string=due_string,
         )
 
     def _handle_todoist_task_edited(self, result: dict[str, str] | None) -> None:
@@ -3043,326 +2893,6 @@ class StatusDashboard(App[None]):
         else:
             self.notify("Failed to save issue order", severity="error")
             _ = self._refresh_linear()
-
-    def action_create_goal(self) -> None:
-        """Show modal to create a new weekly goal."""
-        focused = self.focused
-        if not isinstance(focused, VimDataTable) or focused.id != "goals-table":
-            self.notify("Focus on goals panel first", severity="warning")
-            return
-
-        _ = self.push_screen(CreateGoalModal(), self._handle_goal_created)
-
-    def _handle_goal_created(self, result: dict[str, str] | None) -> None:
-        """Handle the result from the goal creation modal."""
-        if result:
-            content = result["content"]
-            today = date.today()
-            week_start = goals_db.get_week_start(today)
-            _ = goals_db.create_goal(content, week_start)
-            self.notify("Goal added!")
-            self._refresh_goals()
-
-    def action_complete_goal(self) -> None:
-        """Mark the selected goal as complete."""
-        focused = self.focused
-        if not isinstance(focused, VimDataTable) or focused.id != "goals-table":
-            self.notify("Select a goal first", severity="warning")
-            return
-
-        if focused.row_count == 0:
-            return
-
-        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
-        if not cell_key.row_key or not cell_key.row_key.value:
-            return
-
-        key = str(cell_key.row_key.value)
-        if not key.startswith("goal:") or key == "goal:prompt":
-            return
-
-        goal_id = key.split(":", 1)[1]
-        goal = next((g for g in self._goals if g.id == goal_id), None)
-        if not goal:
-            return
-
-        # Optimistic update: mark goal as completed in local list
-        original_is_completed = goal.is_completed
-        goal.is_completed = True
-        self._render_goals_table()
-
-        if goals_db.complete_goal(goal_id):
-            description = f"Complete: {goal.content[:30]}"
-            self._undo_stack.push(
-                GoalCompleteAction(goal_id=goal_id, description=description)
-            )
-            self._last_action_undoable = True
-            self.notify("Goal completed!")
-        else:
-            # Rollback: restore original completion state
-            goal.is_completed = original_is_completed
-            self._render_goals_table()
-            self.notify("Failed to complete goal", severity="error")
-
-    def action_delete_goal(self) -> None:
-        """Delete the selected goal."""
-        focused = self.focused
-        if not isinstance(focused, VimDataTable) or focused.id != "goals-table":
-            self.notify("Select a goal first", severity="warning")
-            return
-
-        if focused.row_count == 0:
-            return
-
-        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
-        if not cell_key.row_key or not cell_key.row_key.value:
-            return
-
-        key = str(cell_key.row_key.value)
-        if not key.startswith("goal:") or key == "goal:prompt":
-            return
-
-        goal_id = key.split(":", 1)[1]
-
-        # Find goal content for confirmation message
-        goal_name = "this goal"
-        for goal in self._goals:
-            if goal.id == goal_id:
-                goal_name = (
-                    goal.content[:40] + "..."
-                    if len(goal.content) > 40
-                    else goal.content
-                )
-                break
-
-        def handle_goal_delete_confirmation(confirmed: bool) -> None:
-            if confirmed:
-                if goals_db.delete_goal(goal_id):
-                    self.notify("Goal deleted")
-                    self._refresh_goals()
-                else:
-                    self.notify("Failed to delete goal", severity="error")
-
-        self.push_screen(  # pyright: ignore[reportCallIssue]
-            ConfirmationModal(
-                title="Delete Goal",
-                message=f"Delete '{goal_name}'?",
-                confirm_label="Delete",
-            ),
-            handle_goal_delete_confirmation,  # pyright: ignore[reportArgumentType]
-        )
-
-    def action_abandon_goal(self) -> None:
-        """Mark the selected goal as abandoned (or restore if already abandoned)."""
-        focused = self.focused
-        if not isinstance(focused, VimDataTable) or focused.id != "goals-table":
-            self.notify("Select a goal first", severity="warning")
-            return
-
-        if focused.row_count == 0:
-            return
-
-        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
-        if not cell_key.row_key or not cell_key.row_key.value:
-            return
-
-        key = str(cell_key.row_key.value)
-        if not key.startswith("goal:") or key == "goal:prompt":
-            return
-
-        goal_id = key.split(":", 1)[1]
-        goal = next((g for g in self._goals if g.id == goal_id), None)
-        if not goal:
-            return
-
-        # Store original state for rollback
-        original_is_abandoned = goal.is_abandoned
-
-        if goal.is_abandoned:
-            # Already abandoned - restore it
-            # Optimistic update: mark as not abandoned
-            goal.is_abandoned = False
-            self._render_goals_table()
-
-            if goals_db.unabandon_goal(goal_id):
-                self.notify(f"Restored: {goal.content[:30]}")
-            else:
-                # Rollback
-                goal.is_abandoned = original_is_abandoned
-                self._render_goals_table()
-                self.notify("Failed to restore goal", severity="error")
-        else:
-            # Abandon the goal
-            # Optimistic update: mark as abandoned
-            goal.is_abandoned = True
-            self._render_goals_table()
-
-            if goals_db.abandon_goal(goal_id):
-                description = f"Abandon: {goal.content[:30]}"
-                self._undo_stack.push(
-                    GoalAbandonAction(goal_id=goal_id, description=description)
-                )
-                self._last_action_undoable = True
-                self.notify(f"Abandoned: {goal.content[:30]}")
-            else:
-                # Rollback
-                goal.is_abandoned = original_is_abandoned
-                self._render_goals_table()
-                self.notify("Failed to abandon goal", severity="error")
-
-    def action_move_goal_down(self) -> None:
-        """Move the selected goal down."""
-        self._move_goal(1)
-
-    def action_move_goal_up(self) -> None:
-        """Move the selected goal up."""
-        self._move_goal(-1)
-
-    def _move_goal(self, direction: int) -> None:
-        """Move the selected goal up (-1) or down (+1)."""
-        focused = self.focused
-        if not isinstance(focused, VimDataTable) or focused.id != "goals-table":
-            self.notify("Can only move goals", severity="warning")
-            return
-
-        if focused.row_count == 0:
-            return
-
-        # Get the list of goals that can be reordered (incomplete goals in normal view)
-        if self._goals_showing_review:
-            # In review mode, we can reorder all goals (they're from last week)
-            movable_goals = [g for g in self._goals]
-        else:
-            # In normal mode, only incomplete goals are shown and movable
-            movable_goals = [g for g in self._goals if not g.is_completed]
-
-        current_row = focused.cursor_row
-        target_row = current_row + direction
-
-        if target_row < 0 or target_row >= len(movable_goals):
-            return
-
-        # Don't allow moving onto the prompt row
-        cell_key = focused.coordinate_to_cell_key(Coordinate(target_row, 0))
-        if cell_key.row_key and str(cell_key.row_key.value) == "goal:prompt":
-            return
-
-        # Don't allow swapping between abandoned and non-abandoned goals
-        current_goal = movable_goals[current_row]
-        target_goal = movable_goals[target_row]
-        if current_goal.is_abandoned != target_goal.is_abandoned:
-            return
-
-        # Swap in the local list
-        movable_goals[current_row], movable_goals[target_row] = (
-            movable_goals[target_row],
-            movable_goals[current_row],
-        )
-
-        # Update main goals list to reflect new order
-        if self._goals_showing_review:
-            self._goals = movable_goals
-        else:
-            # Rebuild _goals with updated order for incomplete goals
-            completed = [g for g in self._goals if g.is_completed]
-            self._goals = movable_goals + completed
-
-        # Re-render and move cursor
-        self._render_goals_table()
-        focused.move_cursor(row=target_row)
-
-        # Persist to database
-        new_orders = {goal.id: idx for idx, goal in enumerate(movable_goals)}
-        _ = goals_db.update_sort_orders(new_orders)
-
-    def action_open_goals_setup(self) -> None:
-        """Open the weekly goals setup modal."""
-        focused = self.focused
-        if not isinstance(focused, VimDataTable) or focused.id != "goals-table":
-            self.notify("Focus on goals panel first", severity="warning")
-            return
-
-        today = date.today()
-        week_start = goals_db.get_week_start(today)
-        goals = goals_db.get_goals_for_week(week_start)
-        metrics = goals_db.get_week_metrics(week_start)
-
-        _ = self.push_screen(
-            WeeklyGoalsSetupModal(week_start, goals, metrics),
-            self._handle_setup_complete,
-        )
-
-    def _handle_setup_complete(self, result: dict[str, object] | None) -> None:
-        """Handle the result from the weekly goals setup modal."""
-        if not result:
-            return
-
-        week_start: date = result["week_start"]  # pyright: ignore[reportAssignmentType]
-        goals_from_modal: list[goals_db.Goal] = result["goals"]  # pyright: ignore[reportAssignmentType]
-
-        # Get existing goals for comparison
-        existing_goals = {g.id: g for g in goals_db.get_goals_for_week(week_start)}
-        modal_goal_ids = {g.id for g in goals_from_modal if g.id}
-
-        # Delete goals that were removed in the modal
-        for goal_id in existing_goals:
-            if goal_id not in modal_goal_ids:
-                _ = goals_db.delete_goal(goal_id)
-
-        # Create or update goals with their per-goal estimates
-        for _i, goal in enumerate(goals_from_modal):
-            if not goal.id:
-                # New goal - create and then update estimates
-                new_id = goals_db.create_goal(goal.content, week_start)
-                if goal.h2_2025_estimate is not None or goal.predicted_time is not None:
-                    _ = goals_db.update_goal_estimates(
-                        new_id, goal.h2_2025_estimate, goal.predicted_time
-                    )
-            elif goal.id in existing_goals:
-                existing = existing_goals[goal.id]
-                if existing.content != goal.content:
-                    _ = goals_db.update_goal_content(goal.id, goal.content)
-                # Always update per-goal estimates
-                _ = goals_db.update_goal_estimates(
-                    goal.id, goal.h2_2025_estimate, goal.predicted_time
-                )
-
-        # Update sort orders based on modal order
-        new_goals = goals_db.get_goals_for_week(week_start)
-        # Map modal order to new goals
-        modal_order: dict[str, int] = {
-            g.content: i for i, g in enumerate(goals_from_modal)
-        }
-        new_orders: dict[str, int] = {}
-        for g in new_goals:
-            if g.content in modal_order:
-                new_orders[g.id] = modal_order[g.content]
-            else:
-                new_orders[g.id] = len(modal_order)
-        _ = goals_db.update_sort_orders(new_orders)
-
-        self.notify("Goals saved!")
-        self._refresh_goals()
-
-    def _handle_review_complete(self, result: dict[str, object] | None) -> None:
-        """Handle the result from the weekly review modal."""
-        if not result:
-            self._refresh_goals()
-            return
-
-        goal_completions: dict[str, bool] = result.get("goal_completions", {})  # pyright: ignore[reportAssignmentType]
-        goal_actual_times: dict[str, float | None] = result.get("goal_actual_times", {})  # pyright: ignore[reportAssignmentType]
-
-        # Update goal completion statuses
-        for goal_id, is_completed in goal_completions.items():
-            _ = goals_db.update_goal_completion(goal_id, is_completed)
-
-        # Update per-goal actual times
-        for goal_id, actual_time in goal_actual_times.items():
-            _ = goals_db.update_goal_actual_time(goal_id, actual_time)
-
-        self.notify("Review saved!")
-        self._refresh_goals()
 
 
 def main():

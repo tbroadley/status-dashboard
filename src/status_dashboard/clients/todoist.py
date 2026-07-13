@@ -28,6 +28,7 @@ class Task:
     description: str = ""
     is_recurring: bool = False
     due_string: str | None = None
+    project_id: str | None = None
 
 
 def _get_token() -> str | None:
@@ -147,6 +148,7 @@ def get_tasks_for_date(target_date: date, api_token: str | None = None) -> list[
                 description=cast(str, item.get("description", "")),
                 is_recurring=is_recurring,
                 due_string=due_string,
+                project_id=cast(str | None, item.get("project_id")),
             )
         )
 

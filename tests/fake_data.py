@@ -1,7 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 
 from status_dashboard.clients import github, linear, todoist
-from status_dashboard.db import goals as goals_db
 
 
 def fake_prs() -> list[github.PullRequest]:
@@ -236,60 +235,5 @@ def fake_linear_issues() -> list[linear.Issue]:
             team_id="team1",
             assignee_initials="TB",
             sort_order=5.0,
-        ),
-    ]
-
-
-def fake_goals() -> list[goals_db.Goal]:
-    now = datetime.now()
-    week_start = goals_db.get_week_start(date.today())
-    return [
-        goals_db.Goal(
-            id="g1",
-            content="Ship webhook retry feature (ENG-301)",
-            week_start=week_start,
-            is_completed=True,
-            is_abandoned=False,
-            completed_at=now - timedelta(days=1),
-            abandoned_at=None,
-            created_at=now - timedelta(days=5),
-            sort_order=0,
-            predicted_time=8.0,
-            actual_time=6.5,
-        ),
-        goals_db.Goal(
-            id="g2",
-            content="Review and merge all open PRs",
-            week_start=week_start,
-            is_completed=False,
-            is_abandoned=False,
-            completed_at=None,
-            abandoned_at=None,
-            created_at=now - timedelta(days=5),
-            sort_order=1,
-            predicted_time=4.0,
-        ),
-        goals_db.Goal(
-            id="g3",
-            content="Write design doc for notifications system",
-            week_start=week_start,
-            is_completed=False,
-            is_abandoned=False,
-            completed_at=None,
-            abandoned_at=None,
-            created_at=now - timedelta(days=3),
-            sort_order=2,
-            predicted_time=6.0,
-        ),
-        goals_db.Goal(
-            id="g4",
-            content="Investigate flaky test suite",
-            week_start=week_start,
-            is_completed=False,
-            is_abandoned=True,
-            completed_at=None,
-            abandoned_at=now - timedelta(days=2),
-            created_at=now - timedelta(days=5),
-            sort_order=3,
         ),
     ]

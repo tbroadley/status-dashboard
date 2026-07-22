@@ -16,11 +16,12 @@ from typing import ClassVar, TypeAlias, cast, override
 
 from dotenv import find_dotenv, load_dotenv
 from rich.text import Text
-from textual import work
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.coordinate import Coordinate
+from textual.css.query import NoMatches
 from textual.timer import Timer  # used for cast of debounce handles
 from textual.widgets import DataTable, Footer as TextualFooter, Static
 from textual.widgets._footer import FooterKey, FooterLabel, KeyGroup
@@ -582,10 +583,6 @@ class StatusDashboard(App[None]):
         margin-bottom: 1;
     }
 
-    #linear {
-        height: auto;
-    }
-
     .panel-title {
         background: $accent;
         color: $text;
@@ -596,23 +593,6 @@ class StatusDashboard(App[None]):
 
     DataTable {
         height: auto;
-        max-height: 10;
-        overflow-x: hidden;
-    }
-
-    #todoist {
-        height: 1fr;
-        min-height: 6;
-    }
-
-    #todoist-table {
-        height: 1fr;
-        max-height: 100%;
-    }
-
-    #linear-table {
-        height: auto;
-        max-height: 12;
         overflow-x: hidden;
     }
 
@@ -842,6 +822,7 @@ class StatusDashboard(App[None]):
             if selected_key:
                 self._restore_cursor_by_key(table, selected_key)
         table.refresh_line_numbers()
+        self._recompute_layout()
 
     @work(exclusive=False)
     async def _refresh_review_requests(self) -> None:
@@ -891,6 +872,7 @@ class StatusDashboard(App[None]):
             if selected_key:
                 self._restore_cursor_by_key(table, selected_key)
         table.refresh_line_numbers()
+        self._recompute_layout()
 
     @work(exclusive=False)
     async def _refresh_gh_notifications(self) -> None:
@@ -927,6 +909,7 @@ class StatusDashboard(App[None]):
             if selected_key:
                 self._restore_cursor_by_key(table, selected_key)
         table.refresh_line_numbers()
+        self._recompute_layout()
 
     def _get_selected_row_key(self, table: DataTable[str | Text]) -> str | None:
         if table.row_count == 0:
@@ -1113,6 +1096,7 @@ class StatusDashboard(App[None]):
             if selected_key:
                 self._restore_cursor_by_key(table, selected_key)
         table.refresh_line_numbers()
+        self._recompute_layout()
 
     @work(exclusive=False)
     async def _refresh_linear(self) -> None:
@@ -1149,6 +1133,81 @@ class StatusDashboard(App[None]):
             if selected_key:
                 self._restore_cursor_by_key(table, selected_key)
         table.refresh_line_numbers()
+        self._recompute_layout()
+
+    # Order in which panels yield vertical space (become scrollable) when the
+    # terminal is too short to show every panel in full. Earliest = made
+    # scrollable first.
+    _SHRINK_ORDER: ClassVar[list[str]] = [
+        "linear",
+        "notifications",
+        "review-requests",
+        "my-prs",
+        "todoist",
+    ]
+
+    def _recompute_layout(self) -> None:
+        """Size each panel's table so panels expand to fill available space,
+        and become scrollable in a fixed priority order when space is tight.
+
+        Any spare whitespace is given to My PRs so it grows rather than leaving
+        an empty gap. When there isn't room for everything, panels shrink (and
+        gain a scrollbar) in ``_SHRINK_ORDER``: Linear first, Todoist last.
+        """
+        try:
+            scroll = self.query_one(VerticalScroll)
+        except NoMatches:
+            return
+        avail = scroll.size.height
+        if avail <= 0:
+            return
+
+        panel_ids = self._SHRINK_ORDER
+        try:
+            tables = {
+                pid: self.query_one(f"#{pid}-table", VimDataTable) for pid in panel_ids
+            }
+        except NoMatches:
+            return
+
+        # Fixed chrome per panel, independent of visible rows:
+        # border (2) + title (1) + margin-bottom (1) + table header (1) = 5
+        PANEL_CHROME = 5
+        # Number of data rows each panel would need to show all its content.
+        natural = {pid: max(t.row_count, 1) for pid, t in tables.items()}
+        # Total data rows displayable across all panels without an outer scroll.
+        budget = avail - PANEL_CHROME * len(panel_ids)
+
+        # Minimum data rows a panel keeps when scrollable. Todoist keeps up to
+        # 3 (1/2/3 items -> 1/2/3 tall; 4+ -> 3 tall and scrolls); every other
+        # panel can shrink to a single row.
+        floors = {pid: 1 for pid in panel_ids}
+        floors["todoist"] = 3
+        floors = {pid: min(floors[pid], natural[pid]) for pid in panel_ids}
+
+        shown = dict(floors)
+        surplus = budget - sum(shown.values())
+
+        # Grow panels toward their natural height in keep-priority order (the
+        # reverse of the shrink order): the most-protected panel fills first,
+        # so the least-protected (Linear) is the first to be left scrolling.
+        for pid in reversed(panel_ids):
+            if surplus <= 0:
+                break
+            give = min(natural[pid] - shown[pid], surplus)
+            shown[pid] += give
+            surplus -= give
+
+        # Leftover whitespace expands My PRs rather than sitting empty.
+        if surplus > 0:
+            shown["my-prs"] += surplus
+
+        for pid, table in tables.items():
+            table.styles.height = shown[pid] + 1  # +1 for the header row
+
+    def on_resize(self, event: events.Resize) -> None:
+        del event
+        self._recompute_layout()
 
     def action_refresh(self) -> None:
         self.refresh_all()

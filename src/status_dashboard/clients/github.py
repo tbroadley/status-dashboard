@@ -175,7 +175,7 @@ query {{
 
 REVIEW_REQUESTS_QUERY = """
 query {{
-  search(query: "review-requested:@me state:open org:{org} type:pr", type: ISSUE, first: 50) {{
+  search(query: "{search_query}", type: ISSUE, first: 100) {{
     nodes {{
       ... on PullRequest {{
         number
@@ -536,63 +536,64 @@ def get_review_requests(orgs: list[str] | None = None) -> list[ReviewRequest]:
     all_prs: list[ReviewRequest] = []
     my_username = get_my_username()
 
-    for owner in owners:
-        query = REVIEW_REQUESTS_QUERY.format(org=owner)
-        result = _run_gh_graphql(query)
+    # GitHub search OR's repeated org: qualifiers, so all orgs fit in one query.
+    scope = " ".join(f"org:{owner}" for owner in owners)
+    query = REVIEW_REQUESTS_QUERY.format(
+        search_query=f"review-requested:@me state:open type:pr {scope}"
+    )
+    result = _run_gh_graphql(query)
+    if not result:
+        return []
 
-        if not result:
+    data = _get_dict(result, "data")
+    search = _get_dict(data, "search")
+    nodes = _get_list(search, "nodes")
+
+    for pr in nodes:
+        if not pr:
             continue
 
-        data = _get_dict(result, "data")
-        search = _get_dict(data, "search")
-        nodes = _get_list(search, "nodes")
+        # Extract requested teams and directly-requested users
+        requested_teams: list[str] = []
+        directly_requested_users: list[str] = []
+        rr_wrapper = _get_dict(pr, "reviewRequests")
+        review_requests = _get_list(rr_wrapper, "nodes")
+        for req in review_requests:
+            reviewer = _get_dict(req, "requestedReviewer")
+            if reviewer and "slug" in reviewer:
+                requested_teams.append(_get_str(reviewer, "slug"))
+            login = _get_str(reviewer, "login")
+            if login:
+                directly_requested_users.append(login)
 
-        for pr in nodes:
-            if not pr:
-                continue
+        # Skip PRs where review is only requested via team, not directly
+        if my_username and my_username not in directly_requested_users:
+            continue
 
-            # Extract requested teams and directly-requested users
-            requested_teams: list[str] = []
-            directly_requested_users: list[str] = []
-            rr_wrapper = _get_dict(pr, "reviewRequests")
-            review_requests = _get_list(rr_wrapper, "nodes")
-            for req in review_requests:
-                reviewer = _get_dict(req, "requestedReviewer")
-                if reviewer and "slug" in reviewer:
-                    requested_teams.append(_get_str(reviewer, "slug"))
-                login = _get_str(reviewer, "login")
-                if login:
-                    directly_requested_users.append(login)
+        # Check if someone else has already submitted a review
+        lr_wrapper = _get_dict(pr, "latestReviews")
+        reviews = _get_list(lr_wrapper, "nodes")
+        human_reviews = [
+            r
+            for r in reviews
+            if _get_str(_get_dict(r, "author"), "login").lower() not in BOT_REVIEWERS
+        ]
+        has_other_review = len(human_reviews) > 0
 
-            # Skip PRs where review is only requested via team, not directly
-            if my_username and my_username not in directly_requested_users:
-                continue
-
-            # Check if someone else has already submitted a review
-            lr_wrapper = _get_dict(pr, "latestReviews")
-            reviews = _get_list(lr_wrapper, "nodes")
-            human_reviews = [
-                r
-                for r in reviews
-                if _get_str(_get_dict(r, "author"), "login").lower()
-                not in BOT_REVIEWERS
-            ]
-            has_other_review = len(human_reviews) > 0
-
-            repo_info = _get_dict(pr, "repository")
-            author_info = _get_dict(pr, "author")
-            all_prs.append(
-                ReviewRequest(
-                    number=_get_int(pr, "number"),
-                    title=_get_str(pr, "title"),
-                    repository=_get_str(repo_info, "nameWithOwner", "unknown"),
-                    url=_get_str(pr, "url"),
-                    author=_get_str(author_info, "login", "unknown"),
-                    created_at=_parse_datetime(_get_str(pr, "createdAt")),
-                    requested_teams=requested_teams,
-                    has_other_review=has_other_review,
-                )
+        repo_info = _get_dict(pr, "repository")
+        author_info = _get_dict(pr, "author")
+        all_prs.append(
+            ReviewRequest(
+                number=_get_int(pr, "number"),
+                title=_get_str(pr, "title"),
+                repository=_get_str(repo_info, "nameWithOwner", "unknown"),
+                url=_get_str(pr, "url"),
+                author=_get_str(author_info, "login", "unknown"),
+                created_at=_parse_datetime(_get_str(pr, "createdAt")),
+                requested_teams=requested_teams,
+                has_other_review=has_other_review,
             )
+        )
 
     all_prs.sort(key=lambda pr: pr.created_at, reverse=True)
     return all_prs

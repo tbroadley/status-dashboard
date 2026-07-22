@@ -1,3 +1,4 @@
+import concurrent.futures
 import json
 import logging
 import os
@@ -113,7 +114,7 @@ def _relative_time(dt: datetime) -> str:  # pyright: ignore[reportUnusedFunction
 
 MY_PRS_QUERY_TEMPLATE = """
 query {{
-  search(query: "{search_query}", type: ISSUE, first: 50) {{
+  search(query: "{search_query}", type: ISSUE, first: 100) {{
     nodes {{
       ... on PullRequest {{
         number
@@ -396,17 +397,23 @@ def get_my_prs(orgs: list[str] | None = None) -> list[PullRequest]:
     my_username = get_my_username()
     prs_by_url: dict[str, PullRequest] = {}
 
-    def add_prs(search_query: str) -> None:
-        for pr in _run_my_prs_query(search_query):
-            _ = prs_by_url.setdefault(pr.url, pr)
+    # GitHub search OR's repeated org:/repo: qualifiers, so a single query can
+    # span every org and extra repo at once. We only need two queries (author
+    # and assignee, which can't be combined since same-name qualifiers AND), and
+    # we run them in parallel to keep My PRs loading fast.
+    scope = " ".join(
+        [f"org:{owner}" for owner in owners]
+        + [f"repo:{repo}" for repo in _get_extra_pr_repos()]
+    )
+    search_queries = [
+        f"author:@me state:open type:pr {scope}",
+        f"assignee:@me state:open type:pr {scope}",
+    ]
 
-    for owner in owners:
-        add_prs(f"author:@me state:open org:{owner} type:pr")
-        add_prs(f"assignee:@me state:open org:{owner} type:pr")
-
-    for repo in _get_extra_pr_repos():
-        add_prs(f"author:@me state:open repo:{repo} type:pr")
-        add_prs(f"assignee:@me state:open repo:{repo} type:pr")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(search_queries)) as ex:
+        for prs in ex.map(_run_my_prs_query, search_queries):
+            for pr in prs:
+                _ = prs_by_url.setdefault(pr.url, pr)
 
     def _should_include(pr: PullRequest) -> bool:
         assignees = pr.assignees or []

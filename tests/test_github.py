@@ -35,10 +35,12 @@ class GetMyPRsTests(unittest.TestCase):
         )
 
         responses = {
-            "author:@me state:open org:METR type:pr": [authored_pr],
-            "assignee:@me state:open org:METR type:pr": [assigned_pr, authored_pr],
-            "author:@me state:open repo:outside/repo type:pr": [],
-            "assignee:@me state:open repo:outside/repo type:pr": [extra_repo_pr],
+            "author:@me state:open type:pr org:METR repo:outside/repo": [authored_pr],
+            "assignee:@me state:open type:pr org:METR repo:outside/repo": [
+                assigned_pr,
+                authored_pr,
+                extra_repo_pr,
+            ],
         }
 
         def run_my_prs_query(query: str) -> list[github.PullRequest]:
@@ -58,13 +60,11 @@ class GetMyPRsTests(unittest.TestCase):
             [pr.url for pr in prs],
             [assigned_pr.url, authored_pr.url, extra_repo_pr.url],
         )
-        self.assertEqual(
+        self.assertCountEqual(
             run_query.call_args_list,
             [
-                call("author:@me state:open org:METR type:pr"),
-                call("assignee:@me state:open org:METR type:pr"),
-                call("author:@me state:open repo:outside/repo type:pr"),
-                call("assignee:@me state:open repo:outside/repo type:pr"),
+                call("author:@me state:open type:pr org:METR repo:outside/repo"),
+                call("assignee:@me state:open type:pr org:METR repo:outside/repo"),
             ],
         )
 

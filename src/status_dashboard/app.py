@@ -2017,7 +2017,17 @@ class StatusDashboard(App[None]):
         issue_identifier: str | None,
         original_initials: str | None,
     ) -> None:
-        issue = await asyncio.to_thread(linear.get_issue, issue_id)
+        # get_issue and get_viewer_id are independent; when assigning, fetch both
+        # concurrently. When unassigning we don't need the viewer ID.
+        if assign:
+            issue, viewer_id = await asyncio.gather(
+                asyncio.to_thread(linear.get_issue, issue_id),
+                asyncio.to_thread(linear.get_viewer_id),
+            )
+        else:
+            issue = await asyncio.to_thread(linear.get_issue, issue_id)
+            viewer_id = None
+
         assignee_raw = issue.get("assignee") if issue else None
         previous_assignee_id = cast(
             str | None,
@@ -2025,7 +2035,6 @@ class StatusDashboard(App[None]):
         )
 
         if assign:
-            viewer_id = await asyncio.to_thread(linear.get_viewer_id)
             if not viewer_id:
                 # Rollback: restore original initials
                 for i in self._linear_issues:
@@ -2794,15 +2803,15 @@ class StatusDashboard(App[None]):
     @work(exclusive=False)
     async def _prepare_linear_issue_modal(self) -> None:
         """Load team data and show the Linear issue creation modal."""
-        # Get team ID
-        team_id = await asyncio.to_thread(linear.get_team_id)
+        # These three fetches are independent, so run them concurrently.
+        team_id, team_members, viewer_id = await asyncio.gather(
+            asyncio.to_thread(linear.get_team_id),
+            asyncio.to_thread(linear.get_team_members),
+            asyncio.to_thread(linear.get_viewer_id),
+        )
         if not team_id:
             self.notify("Failed to get team ID", severity="error")
             return
-
-        # Get team members and viewer ID
-        team_members = await asyncio.to_thread(linear.get_team_members)
-        viewer_id = await asyncio.to_thread(linear.get_viewer_id)
 
         # Store team_id for later use
         self._linear_team_id = team_id

@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 from typing import cast
 from unittest.mock import patch
 
-_ = os.environ.setdefault("TODOIST_API_TOKEN", "fake-token")
+_ = os.environ.setdefault("TASKS_SPREADSHEET_ID", "fake-sheet")
 _ = os.environ.setdefault("LINEAR_API_KEY", "fake-key")
 _ = os.environ.setdefault("LINEAR_PROJECT", "Fake Project")
 
@@ -49,8 +49,8 @@ def _patched(config_dir: Path) -> Iterator[None]:
         patch("status_dashboard.clients.github.get_my_prs", return_value=_prs()),
         patch("status_dashboard.clients.github.get_review_requests", return_value=[]),
         patch("status_dashboard.clients.github.get_notifications", return_value=[]),
-        patch("status_dashboard.clients.todoist.get_tasks_for_date", return_value=[]),
-        patch("status_dashboard.clients.todoist.get_projects", return_value=[]),
+        patch("status_dashboard.clients.sheets.get_tasks_for_date", return_value=[]),
+        patch("status_dashboard.clients.sheets.get_projects", return_value=[]),
         patch("status_dashboard.app.StatusDashboard._check_for_updates"),
     ):
         yield

@@ -1,12 +1,13 @@
 # Status Dashboard
 
-Terminal UI (TUI) dashboard aggregating GitHub PRs, Todoist tasks, and Linear issues into a unified view.
+Terminal UI (TUI) dashboard aggregating GitHub PRs, Google Sheets tasks, and Linear issues into a unified view.
 
 ## Architecture
 
 **Technology Stack:**
 - Python 3.11+ with Textual (TUI framework)
-- httpx for async HTTP (Linear, Todoist APIs)
+- httpx for async HTTP (Linear API)
+- `gws` CLI subprocess for Google Sheets
 - GitHub CLI (`gh`) for GitHub API via subprocess
 
 **Key Design Patterns:**
@@ -23,8 +24,10 @@ src/status_dashboard/
 ├── app.py              # Main app, UI layout, keybindings, action handlers
 ├── clients/
 │   ├── github.py       # GitHub API via `gh` CLI subprocess (GraphQL)
-│   ├── todoist.py      # Todoist REST + Sync API
+│   ├── sheets.py       # Google Sheets tasks via `gws` CLI; replaced Todoist
 │   └── linear.py       # Linear GraphQL API
+├── credentials.py      # Fetches secrets from Bitwarden at startup
+├── dates.py            # Due-string + recurrence parsing (was server-side in Todoist)
 ├── undo.py             # Undo action dataclasses and stack
 └── widgets/
     └── create_modals.py  # Task/issue creation dialogs
@@ -33,14 +36,15 @@ src/status_dashboard/
 ## Configuration
 
 Environment variables (`.env` or `$XDG_CONFIG_HOME/status-dashboard/.env`):
-- `TODOIST_API_TOKEN` - Required
-- `LINEAR_API_KEY` - Required
+- `TASKS_SPREADSHEET_ID` - Required (Google Sheet ID; auth is handled by the `gws` CLI)
+- `LINEAR_BW_ITEM` - Name of the Bitwarden item holding the Linear key (fetched at startup)
+- `LINEAR_API_KEY` - Optional; set directly to bypass Bitwarden (env var always wins)
 - `LINEAR_PROJECT` - Required (project name to display)
 - `GITHUB_ORGS` - Optional comma-separated list of GitHub organizations (e.g., `METR,metr-middleman`)
 - `GITHUB_ORG` - Optional single organization (deprecated, use `GITHUB_ORGS`; defaults to METR)
 - `GITHUB_EXTRA_PR_REPOS` - Optional comma-separated list of extra repos to show authored or assigned PRs from (defaults to `ukgovernmentbeis/inspect_ai,meridianlabs-ai/inspect_scout`)
 - `HIDDEN_REVIEW_REQUESTS` - Optional JSON array of [repo, pr_number]
-- `TODOIST_DUE_NOTIFICATIONS` - Optional, enables desktop notifications when a task's due time arrives (default on; set to `false`/`0`/`off` to disable)
+- `TODOIST_DUE_NOTIFICATIONS` - Optional, enables desktop notifications when a task's due time arrives (default on; set to `false`/`0`/`off` to disable). Name retained for backwards compatibility.
 
 App-managed state (not env vars):
 - Hidden PRs: `$XDG_CONFIG_HOME/status-dashboard/hidden_prs.json` — JSON array of `[repo, pr_number]`. PRs hidden from the My PRs panel via the `H` keybinding. Delete entries (or the file) to un-hide.
@@ -79,20 +83,43 @@ uv run basedpyright
 
 Panel-specific bindings are shown in the footer.
 
+## Credentials
+
+`credentials.load_into_env()` runs in `main()` **before** the Textual app starts, so
+Bitwarden can prompt for the master password while the terminal is still free.
+
+- Resolution order per secret: existing env var wins, else `bw get password <item>`
+- `MANAGED_SECRETS` maps an env var to the env var naming its Bitwarden item
+- `bw unlock --raw` writes its prompt to **stderr** and the session key to **stdout**,
+  so only stdout is captured — capturing stderr would hide the prompt
+- `bw unlock` exits 0 even when aborted, so empty stdout is treated as failure
+- Nothing here is fatal: a locked vault or missing item leaves the secret unset and the
+  affected panel degrades, same as any other API failure
+- Startup costs one `bw` call (~1.8s) when a secret needs fetching; secrets are held in
+  memory only, never written back to disk
+
 ## API Client Patterns
 
 All clients follow these conventions:
 - Return `None`, empty list, or `False` on error (no exceptions raised to callers)
 - Errors logged to file and stderr
-- Timeouts: GitHub 30s, Todoist 10-15s, Linear 10s
+- Timeouts: GitHub 30s, gws 30s, Linear 10s
 
 **GitHub** (`clients/github.py`):
 - Uses `gh api graphql` subprocess for queries
 - Functions: `get_my_prs()`, `get_review_requests()`, `squash_merge_pr()`, `remove_self_as_reviewer()`
 
-**Todoist** (`clients/todoist.py`):
-- REST API v2 for most operations, Sync API v9 for day_order
+**Sheets** (`clients/sheets.py`):
+- Shells out to the `gws` CLI (same pattern as `github.py` with `gh`); `gws` owns auth
+- One `Tasks` sheet: `A id | B content | C project | D description | E due | F recurrence | G order | H done | I completed_at`
+- Sheets addresses cells by position, so every mutation re-reads to resolve an ID to a row.
+  **Never cache row numbers** — a delete shifts every row beneath it
+- `deleteDimension` needs the numeric `sheetId` (not 0); `_get_sheet_id()` resolves and caches it
 - Functions: `get_today_tasks()`, `complete_task()`, `defer_task()`, `create_task()`, `update_day_orders()`
+- Recurrence is stored as rule text and advanced locally by `dates.next_occurrence()`;
+  completing a recurring task rolls its due date forward instead of ticking Done
+- Internal names (`_todoist_*` attributes, `todoist:` row keys, `todoist_*` actions) still
+  say "todoist" — cosmetic only, not yet renamed
 
 **Linear** (`clients/linear.py`):
 - GraphQL API via httpx

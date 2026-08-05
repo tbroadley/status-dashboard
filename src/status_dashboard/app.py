@@ -26,8 +26,9 @@ from textual.timer import Timer  # used for cast of debounce handles
 from textual.widgets import DataTable, Footer as TextualFooter, Static
 from textual.widgets._footer import FooterKey, FooterLabel, KeyGroup
 
-from status_dashboard import notifications
-from status_dashboard.clients import github, linear, todoist
+from status_dashboard import credentials, notifications
+from status_dashboard.clients import github, linear
+from status_dashboard.clients import sheets
 from status_dashboard.undo import (
     LinearAssignAction,
     LinearMoveAction,
@@ -621,20 +622,20 @@ class StatusDashboard(App[None]):
     _undo_stack: UndoStack  # pyright: ignore[reportUninitializedInstanceVariable]
     _my_prs: list[github.PullRequest]  # pyright: ignore[reportUninitializedInstanceVariable]
     _review_requests: list[github.ReviewRequest]  # pyright: ignore[reportUninitializedInstanceVariable]
-    _todoist_tasks: list[todoist.Task]  # pyright: ignore[reportUninitializedInstanceVariable]
+    _todoist_tasks: list[sheets.Task]  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_pending_orders: dict[str, int] | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_debounce_handle: Timer | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_day_debounce_handle: Timer | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_restore_key: str | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_selected_date: date  # pyright: ignore[reportUninitializedInstanceVariable]
-    _todoist_optimistic_tasks: dict[str, todoist.Task]  # pyright: ignore[reportUninitializedInstanceVariable]
+    _todoist_optimistic_tasks: dict[str, sheets.Task]  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_notified: set[str]  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_notify_seeded: bool  # pyright: ignore[reportUninitializedInstanceVariable]
     _linear_issues: list[linear.Issue]  # pyright: ignore[reportUninitializedInstanceVariable]
     _linear_debounce_handle: Timer | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _linear_viewer_initials: str | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _gh_notifications: list[github.Notification]  # pyright: ignore[reportUninitializedInstanceVariable]
-    _todoist_projects: list[todoist.Project]  # pyright: ignore[reportUninitializedInstanceVariable]
+    _todoist_projects: list[sheets.Project]  # pyright: ignore[reportUninitializedInstanceVariable]
     _linear_team_id: str  # pyright: ignore[reportUninitializedInstanceVariable]
     _linear_pending_move: tuple[str, float, int] | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _last_action_undoable: bool  # pyright: ignore[reportUninitializedInstanceVariable]
@@ -655,7 +656,7 @@ class StatusDashboard(App[None]):
                 "notifications",
                 table_class=NotificationsDataTable,
             )
-            yield Panel("Todoist (Today)", "todoist", table_class=TodoistDataTable)
+            yield Panel("Tasks (Today)", "todoist", table_class=TodoistDataTable)
             yield Panel("Linear", "linear", table_class=LinearDataTable)
         yield Footer()
 
@@ -752,7 +753,7 @@ class StatusDashboard(App[None]):
     @work(exclusive=False)
     async def _refresh_todoist_projects(self) -> None:
         """Load Todoist projects in the background so the edit modal opens instantly."""
-        self._todoist_projects = await asyncio.to_thread(todoist.get_projects)
+        self._todoist_projects = await asyncio.to_thread(sheets.get_projects)
 
     @work(exclusive=False)
     async def _refresh_my_prs(self) -> None:
@@ -941,7 +942,7 @@ class StatusDashboard(App[None]):
     @work(exclusive=False)
     async def _refresh_todoist(self) -> None:
         selected_date = self._todoist_selected_date
-        tasks = await asyncio.to_thread(todoist.get_tasks_for_date, selected_date)
+        tasks = await asyncio.to_thread(sheets.get_tasks_for_date, selected_date)
         if selected_date != self._todoist_selected_date:
             return
         self._todoist_tasks = tasks
@@ -959,7 +960,7 @@ class StatusDashboard(App[None]):
         """
         today = date.today()
         today_str = today.isoformat()
-        tasks = await asyncio.to_thread(todoist.get_tasks_for_date, today)
+        tasks = await asyncio.to_thread(sheets.get_tasks_for_date, today)
         now = datetime.now()
 
         for task in tasks:
@@ -992,13 +993,13 @@ class StatusDashboard(App[None]):
         today = date.today()
         selected = self._todoist_selected_date
         if selected == today:
-            title_widget.update("Todoist (Today)")
+            title_widget.update("Tasks (Today)")
         elif selected == today - timedelta(days=1):
-            title_widget.update("Todoist (Yesterday)")
+            title_widget.update("Tasks (Yesterday)")
         elif selected == today + timedelta(days=1):
-            title_widget.update("Todoist (Tomorrow)")
+            title_widget.update("Tasks (Tomorrow)")
         else:
-            title_widget.update(f"Todoist ({selected.strftime('%a %b %d')})")
+            title_widget.update(f"Tasks ({selected.strftime('%a %b %d')})")
 
     def action_todoist_previous_day(self) -> None:
         focused = self.focused
@@ -1323,20 +1324,20 @@ class StatusDashboard(App[None]):
         success = False
 
         if isinstance(action, TodoistCompleteAction):
-            success = await asyncio.to_thread(todoist.reopen_task, action.task_id)
+            success = await asyncio.to_thread(sheets.reopen_task, action.task_id)
             if success:
                 _ = self._refresh_todoist()
 
         elif isinstance(action, TodoistDeferAction):
             success = await asyncio.to_thread(
-                todoist.set_due_date, action.task_id, action.original_due_date
+                sheets.set_due_date, action.task_id, action.original_due_date
             )
             if success:
                 _ = self._refresh_todoist()
 
         elif isinstance(action, TodoistMoveAction):
             success = await asyncio.to_thread(
-                todoist.update_day_orders, action.ids_to_orders
+                sheets.update_day_orders, action.ids_to_orders
             )
             if success:
                 _ = self._refresh_todoist()
@@ -1424,7 +1425,7 @@ class StatusDashboard(App[None]):
                 self._todoist_restore_key = self._get_row_key_above(focused)
 
                 # Optimistic update: find and remove task from list
-                removed_task: todoist.Task | None = None
+                removed_task: sheets.Task | None = None
                 removed_index: int = -1
                 for idx, task in enumerate(self._todoist_tasks):
                     if task.id == task_id:
@@ -1462,10 +1463,10 @@ class StatusDashboard(App[None]):
         self,
         task_id: str,
         task_name: str | None,
-        removed_task: todoist.Task | None,
+        removed_task: sheets.Task | None,
         removed_index: int,
     ) -> None:
-        success = await asyncio.to_thread(todoist.complete_task, task_id)
+        success = await asyncio.to_thread(sheets.complete_task, task_id)
         if success:
             description = (
                 f"Complete: {task_name[:30]}" if task_name else "Complete task"
@@ -1515,7 +1516,7 @@ class StatusDashboard(App[None]):
             self._todoist_restore_key = self._get_row_key_above(focused)
 
             # Optimistic update: find and remove task from list
-            removed_task: todoist.Task | None = None
+            removed_task: sheets.Task | None = None
             removed_index: int = -1
             for idx, task in enumerate(self._todoist_tasks):
                 if task.id == task_id:
@@ -1536,17 +1537,17 @@ class StatusDashboard(App[None]):
         self,
         task_id: str,
         task_name: str | None,
-        removed_task: todoist.Task | None,
+        removed_task: sheets.Task | None,
         removed_index: int,
     ) -> None:
-        task = await asyncio.to_thread(todoist.get_task, task_id)
+        task = await asyncio.to_thread(sheets.get_task, task_id)
         due_raw = task.get("due") if task else None
         original_due = cast(
             str | None,
             cast(dict[str, object], due_raw).get("date") if due_raw else None,
         )
 
-        success = await asyncio.to_thread(todoist.defer_task, task_id)
+        success = await asyncio.to_thread(sheets.defer_task, task_id)
         if success:
             description = f"Defer: {task_name[:30]}" if task_name else "Defer task"
             self._undo_stack.push(
@@ -1592,7 +1593,7 @@ class StatusDashboard(App[None]):
             task_id = parts[1]
             # Find task name and task object for confirmation message and rollback
             task_name = "this task"
-            task_to_delete: todoist.Task | None = None
+            task_to_delete: sheets.Task | None = None
             task_index: int = -1
             for idx, task in enumerate(self._todoist_tasks):
                 if task.id == task_id:
@@ -1628,10 +1629,10 @@ class StatusDashboard(App[None]):
     async def _do_delete_todoist_task(
         self,
         task_id: str,
-        removed_task: todoist.Task | None,
+        removed_task: sheets.Task | None,
         removed_index: int,
     ) -> None:
-        success = await asyncio.to_thread(todoist.delete_task, task_id)
+        success = await asyncio.to_thread(sheets.delete_task, task_id)
         if success:
             self.notify("Task deleted")
         else:
@@ -1701,7 +1702,7 @@ class StatusDashboard(App[None]):
         if not new_orders:
             return
 
-        success = await asyncio.to_thread(todoist.update_day_orders, new_orders)
+        success = await asyncio.to_thread(sheets.update_day_orders, new_orders)
         if not success:
             self.notify("Failed to save task order", severity="error")
             _ = self._refresh_todoist()
@@ -1728,11 +1729,11 @@ class StatusDashboard(App[None]):
         _ = self._do_reschedule_overdue_to_today(overdue_tasks)
 
     @work(exclusive=False)
-    async def _do_reschedule_overdue_to_today(self, tasks: list[todoist.Task]) -> None:
+    async def _do_reschedule_overdue_to_today(self, tasks: list[sheets.Task]) -> None:
         success_count = 0
         for task in tasks:
             success = await asyncio.to_thread(
-                todoist.reschedule_to_today,
+                sheets.reschedule_to_today,
                 task.id,
                 task.is_recurring,
                 task.due_string,
@@ -1791,7 +1792,7 @@ class StatusDashboard(App[None]):
 
     @work(exclusive=False)
     async def _do_open_task_link(self, task_id: str) -> None:
-        task = await asyncio.to_thread(todoist.get_task, task_id)
+        task = await asyncio.to_thread(sheets.get_task, task_id)
         if not task:
             self.notify("Failed to fetch task", severity="error")
             return
@@ -2480,7 +2481,7 @@ class StatusDashboard(App[None]):
 
             if show_optimistic and optimistic_due_date is not None:
                 temp_id = f"temp-{uuid.uuid4()}"
-                optimistic_task = todoist.Task(
+                optimistic_task = sheets.Task(
                     id=temp_id,
                     content=content,
                     is_completed=False,
@@ -2598,7 +2599,7 @@ class StatusDashboard(App[None]):
         self, content: str, due_string: str, description: str, temp_id: str | None
     ) -> None:
         new_task_id = await asyncio.to_thread(
-            todoist.create_task, content, due_string, description
+            sheets.create_task, content, due_string, description
         )
         if not new_task_id:
             self.notify("Failed to create task", severity="error")
@@ -2616,11 +2617,11 @@ class StatusDashboard(App[None]):
         if not temp_id:
             return
 
-        updated_task: todoist.Task | None = None
+        updated_task: sheets.Task | None = None
         for task in self._todoist_tasks:
             if task.id == temp_id:
                 task.id = new_task_id
-                task.url = f"https://app.todoist.com/app/task/{new_task_id}"
+                task.url = sheets.spreadsheet_url()
                 updated_task = task
                 break
 
@@ -2631,7 +2632,7 @@ class StatusDashboard(App[None]):
             if not task.id.startswith("temp-"):
                 new_orders[task.id] = idx
 
-        _ = await asyncio.to_thread(todoist.update_day_orders, new_orders)
+        _ = await asyncio.to_thread(sheets.update_day_orders, new_orders)
 
         # Check cursor position RIGHT BEFORE rendering to avoid race condition
         # where user moves cursor during the API call above
@@ -2710,13 +2711,13 @@ class StatusDashboard(App[None]):
     @work(exclusive=False)
     async def _prepare_edit_todoist_task(self, task_id: str) -> None:
         """Fallback: fetch task data from the API, then show the edit modal."""
-        task_data = await asyncio.to_thread(todoist.get_task, task_id)
+        task_data = await asyncio.to_thread(sheets.get_task, task_id)
         if not task_data:
             self.notify("Failed to load task", severity="error")
             return
 
         if not self._todoist_projects:
-            self._todoist_projects = await asyncio.to_thread(todoist.get_projects)
+            self._todoist_projects = await asyncio.to_thread(sheets.get_projects)
 
         content = cast(str, task_data.get("content", ""))
         description = cast(str, task_data.get("description", ""))
@@ -2757,7 +2758,7 @@ class StatusDashboard(App[None]):
         due_string: str | None,
     ) -> None:
         success = await asyncio.to_thread(
-            todoist.update_task,
+            sheets.update_task,
             task_id,
             content=content,
             description=description,
@@ -2964,6 +2965,9 @@ class StatusDashboard(App[None]):
 
 
 def main():
+    # Fetch secrets before Textual takes over the terminal, so Bitwarden can
+    # prompt for the master password if the vault is locked.
+    credentials.load_into_env()
     app = StatusDashboard()
     app.run()
 

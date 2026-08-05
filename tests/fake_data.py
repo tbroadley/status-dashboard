@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 
-from status_dashboard.clients import github, linear, todoist
+from status_dashboard.clients import github, linear, sheets
 
 
 def fake_prs() -> list[github.PullRequest]:
@@ -122,11 +122,11 @@ def fake_notifications() -> list[github.Notification]:
     ]
 
 
-def fake_todoist_tasks() -> list[todoist.Task]:
+def fake_todoist_tasks() -> list[sheets.Task]:
     today = date.today().isoformat()
     yesterday = (date.today() - timedelta(days=1)).isoformat()
     return [
-        todoist.Task(
+        sheets.Task(
             id="t1",
             content="Review Q1 planning document",
             is_completed=False,
@@ -136,7 +136,7 @@ def fake_todoist_tasks() -> list[todoist.Task]:
             due_time="09:00",
             comment_count=2,
         ),
-        todoist.Task(
+        sheets.Task(
             id="t2",
             content="Write unit tests for auth module",
             is_completed=False,
@@ -144,7 +144,7 @@ def fake_todoist_tasks() -> list[todoist.Task]:
             day_order=2,
             due_date=today,
         ),
-        todoist.Task(
+        sheets.Task(
             id="t3",
             content="Respond to Sarah's design feedback",
             is_completed=False,
@@ -154,7 +154,7 @@ def fake_todoist_tasks() -> list[todoist.Task]:
             comment_count=5,
             description="She left comments on the Figma file",
         ),
-        todoist.Task(
+        sheets.Task(
             id="t4",
             content="Update API documentation for v2 endpoints",
             is_completed=False,
@@ -163,7 +163,7 @@ def fake_todoist_tasks() -> list[todoist.Task]:
             due_date=yesterday,
             due_time="14:00",
         ),
-        todoist.Task(
+        sheets.Task(
             id="t5",
             content="Fix broken CI pipeline for staging",
             is_completed=False,
@@ -171,7 +171,7 @@ def fake_todoist_tasks() -> list[todoist.Task]:
             day_order=5,
             due_date=today,
         ),
-        todoist.Task(
+        sheets.Task(
             id="t6",
             content="Prepare demo for Friday standup",
             is_completed=False,

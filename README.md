@@ -1,6 +1,6 @@
 # Status Dashboard
 
-A terminal dashboard for tracking PRs, Todoist tasks, and Linear issues.
+A terminal dashboard for tracking PRs, tasks (Google Sheets), and Linear issues.
 
 ## Setup
 
@@ -13,15 +13,16 @@ A terminal dashboard for tracking PRs, Todoist tasks, and Linear issues.
 
    | Variable | Required | Description |
    |----------|----------|-------------|
-   | `TODOIST_API_TOKEN` | Yes | Your Todoist API token |
-   | `LINEAR_API_KEY` | Yes | Your Linear API key |
+   | `TASKS_SPREADSHEET_ID` | Yes | ID of the Google Sheet holding tasks |
+   | `LINEAR_BW_ITEM` | Yes | Bitwarden item holding the Linear API key |
+   | `LINEAR_API_KEY` | No | Set directly to bypass Bitwarden |
    | `LINEAR_PROJECT` | Yes | Name of the Linear project to show issues from |
    | `GITHUB_ORGS` | No | Comma-separated list of GitHub organizations (e.g., `METR,metr-middleman`) |
    | `GITHUB_ORG` | No | Single GitHub organization (deprecated, use `GITHUB_ORGS` instead) |
    | `GITHUB_EXTRA_PR_REPOS` | No | Comma-separated list of extra repos to show authored or assigned PRs from (e.g., `owner/repo1,owner/repo2`) |
    | `HIDDEN_REVIEW_REQUESTS` | No | JSON array of `[repo, pr_number]` pairs to hide from review requests |
 
-3. Install dependencies and run:
+3. Authenticate the `gws` CLI (used for Sheets access), then install and run:
    ```bash
    uv sync
    uv run status-dashboard
@@ -41,7 +42,7 @@ A terminal dashboard for tracking PRs, Todoist tasks, and Linear issues.
 | `c` | Complete selected task/issue |
 | `q` | Quit |
 
-### Todoist
+### Tasks
 | Key | Action |
 |-----|--------|
 | `a` | Add new task |

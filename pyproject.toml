@@ -24,3 +24,5 @@ dev = [
 
 [tool.basedpyright]
 reportUnusedCallResult = "error"
+# One-off migration utilities that shovel untyped JSON; not worth TypedDicts.
+exclude = ["scripts", "**/node_modules", "**/__pycache__", "**/.*"]

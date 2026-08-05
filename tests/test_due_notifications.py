@@ -5,20 +5,20 @@ from collections.abc import AsyncIterator, Iterator
 from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
-_ = os.environ.setdefault("TODOIST_API_TOKEN", "fake-token")
+_ = os.environ.setdefault("TASKS_SPREADSHEET_ID", "fake-sheet")
 _ = os.environ.setdefault("LINEAR_API_KEY", "fake-key")
 _ = os.environ.setdefault("LINEAR_PROJECT", "Fake Project")
 
 from textual.pilot import Pilot  # noqa: E402
 
 from status_dashboard.app import StatusDashboard  # noqa: E402
-from status_dashboard.clients import todoist  # noqa: E402
+from status_dashboard.clients import sheets  # noqa: E402
 
 TODAY = date.today()
 
 
-def _task(task_id: str, due_time: str | None) -> todoist.Task:
-    return todoist.Task(
+def _task(task_id: str, due_time: str | None) -> sheets.Task:
+    return sheets.Task(
         id=task_id,
         content=f"Task {task_id}",
         is_completed=False,
@@ -34,16 +34,14 @@ def _at(hour: int, minute: int) -> datetime:
 
 @contextlib.contextmanager
 def _patched(
-    tasks: list[todoist.Task], clock: dict[str, datetime]
+    tasks: list[sheets.Task], clock: dict[str, datetime]
 ) -> Iterator[MagicMock]:
     mock_datetime = MagicMock(wraps=datetime)
     mock_datetime.now = lambda: clock["now"]
     send = MagicMock(return_value=True)
     with (
-        patch(
-            "status_dashboard.clients.todoist.get_tasks_for_date", return_value=tasks
-        ),
-        patch("status_dashboard.clients.todoist.get_projects", return_value=[]),
+        patch("status_dashboard.clients.sheets.get_tasks_for_date", return_value=tasks),
+        patch("status_dashboard.clients.sheets.get_projects", return_value=[]),
         patch("status_dashboard.clients.github.get_my_prs", return_value=[]),
         patch("status_dashboard.clients.github.get_review_requests", return_value=[]),
         patch("status_dashboard.clients.github.get_notifications", return_value=[]),

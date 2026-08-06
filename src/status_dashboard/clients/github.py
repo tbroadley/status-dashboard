@@ -389,12 +389,13 @@ def _run_my_prs_query(search_query: str) -> list[PullRequest]:
 
 
 def get_my_prs(orgs: list[str] | None = None) -> list[PullRequest]:
-    """Get open PRs that are assigned to me, or authored by me with no assignee.
+    """Get open PRs that I authored or that are assigned to me.
 
-    Excludes PRs that I authored but that have been assigned to someone else.
+    A PR I opened stays mine even once someone else is assigned to it: changes
+    requested and merge conflicts are still mine to fix, so hiding it on the
+    grounds that it's been handed off loses exactly the PR that needs work.
     """
     owners = orgs or _get_orgs()
-    my_username = get_my_username()
     prs_by_url: dict[str, PullRequest] = {}
 
     # GitHub search OR's repeated org:/repo: qualifiers, so a single query can
@@ -415,19 +416,8 @@ def get_my_prs(orgs: list[str] | None = None) -> list[PullRequest]:
             for pr in prs:
                 _ = prs_by_url.setdefault(pr.url, pr)
 
-    def _should_include(pr: PullRequest) -> bool:
-        assignees = pr.assignees or []
-        # Keep if assigned to me
-        if my_username and my_username in assignees:
-            return True
-        # Keep if no one is assigned (PR authored by me with no assignee)
-        if not assignees:
-            return True
-        # Exclude: has assignees but I'm not one of them
-        return False
-
-    all_prs = [pr for pr in prs_by_url.values() if _should_include(pr)]
-    all_prs.sort(key=lambda pr: pr.created_at, reverse=True)
+    # Both queries already scope to me, so their union needs no further filtering.
+    all_prs = sorted(prs_by_url.values(), key=lambda pr: pr.created_at, reverse=True)
     return all_prs
 
 

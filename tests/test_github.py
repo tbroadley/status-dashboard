@@ -5,13 +5,19 @@ from unittest.mock import call, patch
 from status_dashboard.clients import github
 
 
-def _make_pr(number: int, url: str, created_at: datetime) -> github.PullRequest:
+def _make_pr(
+    number: int,
+    url: str,
+    created_at: datetime,
+    assignees: list[str] | None = None,
+) -> github.PullRequest:
     return github.PullRequest(
         number=number,
         title=f"PR {number}",
         repository="acme/repo",
         url=url,
         created_at=created_at,
+        assignees=assignees or [],
     )
 
 
@@ -67,6 +73,35 @@ class GetMyPRsTests(unittest.TestCase):
                 call("assignee:@me state:open type:pr org:METR repo:outside/repo"),
             ],
         )
+
+    def test_includes_authored_pr_assigned_to_someone_else(self) -> None:
+        now = datetime.now(timezone.utc)
+        handed_off_pr = _make_pr(
+            4,
+            "https://github.com/acme/repo/pull/4",
+            now,
+            assignees=["someone-else"],
+        )
+
+        responses = {
+            "author:@me state:open type:pr org:METR": [handed_off_pr],
+            "assignee:@me state:open type:pr org:METR": [],
+        }
+
+        def run_my_prs_query(query: str) -> list[github.PullRequest]:
+            return responses[query]
+
+        with (
+            patch.object(github, "_get_extra_pr_repos", return_value=[]),
+            patch.object(
+                github,
+                "_run_my_prs_query",
+                side_effect=run_my_prs_query,
+            ),
+        ):
+            prs = github.get_my_prs(["METR"])
+
+        self.assertEqual([pr.url for pr in prs], [handed_off_pr.url])
 
 
 if __name__ == "__main__":

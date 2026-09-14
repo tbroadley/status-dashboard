@@ -704,8 +704,11 @@ class StatusDashboard(App[None]):
         self._setup_table(my_prs)
 
         reviews = self.query_one("#review-requests-table", ReviewRequestsDataTable)
-        _ = reviews.add_columns("#", "PR", "Title", "Repo", "Author", "Age", "Reviewed")
+        _ = reviews.add_columns(
+            "#", "PR", "Title", "Repo", "Author", "Age", "Changes", "Reviewed"
+        )
         self._setup_table(reviews)
+        reviews.cursor_foreground_priority = "renderable"
 
         notifs = self.query_one("#notifications-table", NotificationsDataTable)
         _ = notifs.add_columns("#", "PR", "Title", "Repo", "Reason", "Age")
@@ -851,7 +854,14 @@ class StatusDashboard(App[None]):
 
         if not visible_prs:
             _ = table.add_row(
-                "", "", Text("No review requests", style="dim italic"), "", "", "", ""
+                "",
+                "",
+                Text("No review requests", style="dim italic"),
+                "",
+                "",
+                "",
+                "",
+                "",
             )
         else:
             for pr in visible_prs:
@@ -859,6 +869,9 @@ class StatusDashboard(App[None]):
                 age = github._relative_time(pr.created_at)  # pyright: ignore[reportPrivateUsage]
                 title = pr.title[:40] + "…" if len(pr.title) > 40 else pr.title
                 reviewed = "✓" if pr.has_other_review else ""
+                changes = Text.assemble(
+                    (f"+{pr.additions}", "green"), " ", (f"−{pr.deletions}", "red")
+                )
                 _ = table.add_row(
                     "",
                     f"#{pr.number}",
@@ -866,6 +879,7 @@ class StatusDashboard(App[None]):
                     repo,
                     f"@{pr.author}",
                     age,
+                    changes,
                     reviewed,
                     key=f"review:{pr.repository}:{pr.number}:{pr.url}",
                 )

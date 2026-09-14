@@ -65,6 +65,8 @@ def fake_review_requests() -> list[github.ReviewRequest]:
             created_at=now - timedelta(hours=3),
             requested_teams=[],
             has_other_review=False,
+            additions=128,
+            deletions=42,
         ),
         github.ReviewRequest(
             number=44,
@@ -75,6 +77,8 @@ def fake_review_requests() -> list[github.ReviewRequest]:
             created_at=now - timedelta(days=1, hours=5),
             requested_teams=["platform"],
             has_other_review=True,
+            additions=1050,
+            deletions=0,
         ),
         github.ReviewRequest(
             number=98,
@@ -85,6 +89,8 @@ def fake_review_requests() -> list[github.ReviewRequest]:
             created_at=now - timedelta(hours=12),
             requested_teams=[],
             has_other_review=False,
+            additions=0,
+            deletions=73,
         ),
     ]
 

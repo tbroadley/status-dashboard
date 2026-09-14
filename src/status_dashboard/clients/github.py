@@ -51,6 +51,8 @@ class ReviewRequest:
     created_at: datetime
     requested_teams: list[str]
     has_other_review: bool  # True if someone else has already submitted a review
+    additions: int = 0
+    deletions: int = 0
 
 
 @dataclass
@@ -188,6 +190,8 @@ query {{
           login
         }}
         createdAt
+        additions
+        deletions
         reviewRequests(first: 20) {{
           nodes {{
             requestedReviewer {{
@@ -582,6 +586,8 @@ def get_review_requests(orgs: list[str] | None = None) -> list[ReviewRequest]:
                 created_at=_parse_datetime(_get_str(pr, "createdAt")),
                 requested_teams=requested_teams,
                 has_other_review=has_other_review,
+                additions=_get_int(pr, "additions"),
+                deletions=_get_int(pr, "deletions"),
             )
         )
 

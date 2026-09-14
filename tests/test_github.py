@@ -1,4 +1,6 @@
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
+from typing import cast
 import unittest
 from unittest.mock import call, patch
 
@@ -102,6 +104,53 @@ class GetMyPRsTests(unittest.TestCase):
             prs = github.get_my_prs(["METR"])
 
         self.assertEqual([pr.url for pr in prs], [handed_off_pr.url])
+
+
+class GetReviewRequestsTests(unittest.TestCase):
+    def test_fetches_line_counts(self) -> None:
+        for additions, deletions in [(128, 42), (1050, 0), (0, 73), (0, 0)]:
+            with self.subTest(additions=additions, deletions=deletions):
+                self._assert_line_counts(
+                    {"additions": additions, "deletions": deletions},
+                    additions,
+                    deletions,
+                )
+
+    def test_defaults_missing_line_counts_to_zero(self) -> None:
+        for counts in [{}, {"additions": None, "deletions": None}]:
+            with self.subTest(counts=counts):
+                self._assert_line_counts(counts, 0, 0)
+
+    def _assert_line_counts(
+        self, counts: Mapping[str, int | None], additions: int, deletions: int
+    ) -> None:
+        node = {
+            "number": 1,
+            "title": "Update tests",
+            "url": "https://github.com/acme/repo/pull/1",
+            "repository": {"nameWithOwner": "acme/repo"},
+            "author": {"login": "alice"},
+            "createdAt": "2026-01-01T00:00:00Z",
+            "reviewRequests": {"nodes": [{"requestedReviewer": {"login": "reviewer"}}]},
+            **counts,
+        }
+        with (
+            patch.object(github, "get_my_username", return_value="reviewer"),
+            patch.object(
+                github,
+                "_run_gh_graphql",
+                return_value={"data": {"search": {"nodes": [node]}}},
+            ) as run_query,
+        ):
+            prs = github.get_review_requests(["acme"])
+
+        run_query.assert_called_once()
+        query = cast(str, run_query.call_args.args[0])
+        self.assertIn("\n        additions\n", query)
+        self.assertIn("\n        deletions\n", query)
+        self.assertEqual(len(prs), 1)
+        self.assertEqual(prs[0].additions, additions)
+        self.assertEqual(prs[0].deletions, deletions)
 
 
 if __name__ == "__main__":

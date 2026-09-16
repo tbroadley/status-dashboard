@@ -1,13 +1,13 @@
 # Status Dashboard
 
-Terminal UI (TUI) dashboard aggregating GitHub PRs, Google Sheets tasks, and Linear issues into a unified view.
+Terminal UI (TUI) dashboard aggregating GitHub PRs, S3-backed tasks, and Linear issues into a unified view.
 
 ## Architecture
 
 **Technology Stack:**
 - Python 3.11+ with Textual (TUI framework)
 - httpx for async HTTP (Linear API)
-- `gws` CLI subprocess for Google Sheets
+- AWS CLI subprocess for the shared S3 task document
 - GitHub CLI (`gh`) for GitHub API via subprocess
 
 **Key Design Patterns:**
@@ -24,8 +24,10 @@ src/status_dashboard/
 ├── app.py              # Main app, UI layout, keybindings, action handlers
 ├── clients/
 │   ├── github.py       # GitHub API via `gh` CLI subprocess (GraphQL)
-│   ├── sheets.py       # Google Sheets tasks via `gws` CLI; replaced Todoist
+│   ├── tasks.py        # Task semantics over the shared S3 store
 │   └── linear.py       # Linear GraphQL API
+├── task_store.py       # Validated documents, conditional writes, recovery snapshots
+├── task_store_cli.py   # Explicit create-only import, export, restore, and access check
 ├── credentials.py      # Fetches secrets from Bitwarden at startup
 ├── dates.py            # Due-string + recurrence parsing (was server-side in Todoist)
 ├── undo.py             # Undo action dataclasses and stack
@@ -36,7 +38,8 @@ src/status_dashboard/
 ## Configuration
 
 Environment variables (`.env` or `$XDG_CONFIG_HOME/status-dashboard/.env`):
-- `TASKS_SPREADSHEET_ID` - Required (Google Sheet ID; auth is handled by the `gws` CLI)
+- `TASKS_S3_URI` - Required object URI; no default location (AWS CLI owns auth)
+- `TASKS_AWS_REGION`, `TASKS_AWS_CLI` - Optional region and executable overrides
 - `LINEAR_BW_ITEM` - Name of the Bitwarden item holding the Linear key (fetched at startup)
 - `LINEAR_API_KEY` - Optional; set directly to bypass Bitwarden (env var always wins)
 - `LINEAR_PROJECT` - Required (project name to display)
@@ -100,26 +103,31 @@ Bitwarden can prompt for the master password while the terminal is still free.
 
 ## API Client Patterns
 
-All clients follow these conventions:
-- Return `None`, empty list, or `False` on error (no exceptions raised to callers)
-- Errors logged to file and stderr
-- Timeouts: GitHub 30s, gws 30s, Linear 10s
+GitHub and Linear return empty/false values on failure. Task operations raise a
+safe `StoreError`, caught by `StatusDashboard._task_request`: show/log the error,
+retain the last good view on failed reads, and roll back failed optimistic edits.
+Raw AWS errors and object contents must not reach logs. Timeouts: GitHub 30s,
+AWS CLI 40s (whole process), Linear 10s.
 
 **GitHub** (`clients/github.py`):
 - Uses `gh api graphql` subprocess for queries
 - Functions: `get_my_prs()`, `get_review_requests()`, `squash_merge_pr()`, `remove_self_as_reviewer()`
 
-**Sheets** (`clients/sheets.py`):
-- Shells out to the `gws` CLI (same pattern as `github.py` with `gh`); `gws` owns auth
-- One `Tasks` sheet: `A id | B content | C project | D description | E due | F recurrence | G order | H done | I completed_at`
-- Sheets addresses cells by position, so every mutation re-reads to resolve an ID to a row.
-  **Never cache row numbers** — a delete shifts every row beneath it
-- `deleteDimension` needs the numeric `sheetId` (not 0); `_get_sheet_id()` resolves and caches it
-- Functions: `get_today_tasks()`, `complete_task()`, `defer_task()`, `create_task()`, `update_day_orders()`
-- Recurrence is stored as rule text and advanced locally by `dates.next_occurrence()`;
-  completing a recurring task rolls its due date forward instead of ticking Done
-- Internal names (`_todoist_*` attributes, `todoist:` row keys, `todoist_*` actions) still
-  say "todoist" — cosmetic only, not yet renamed
+**Tasks** (`clients/tasks.py`, `task_store.py`):
+- No Google API calls. The AWS CLI's credential chain owns authentication.
+- Shared format: `{"version":1,"rows":[...]}` with nine string cells per row:
+  `id, content, project, description, due, recurrence, order, done, completed_at`.
+- Validate on every read; missing/corrupt documents fail closed. Never auto-initialize
+  or substitute an empty list. `task-store` provides explicit create-only initialization/import.
+- Each edit reads data+ETag, writes a unique pre-edit recovery object under
+  `<key>.history/`, then uses `If-Match`. Conflicts re-read and reapply by task ID,
+  up to three attempts; a failed archive aborts the write. Restore tries once.
+- All location details belong in local config, never source/tests/PR text. Do not
+  commit real task data. Tests use synthetic documents and a fake S3 transport.
+- Recurrence still advances locally using `dates.next_occurrence()`; completion
+  rolls its due date forward rather than marking a recurring task done.
+- Legacy UI names (`_todoist_*`, `todoist:` row keys, and the `sheets` import alias)
+  are cosmetic; task persistence is exclusively S3. See README for setup/recovery.
 
 **Linear** (`clients/linear.py`):
 - GraphQL API via httpx

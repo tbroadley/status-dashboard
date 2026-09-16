@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from rich.console import Console
 
-_ = os.environ.setdefault("TASKS_SPREADSHEET_ID", "fake-sheet")
+_ = os.environ.setdefault("TASKS_S3_URI", "s3://example-bucket/tasks.json")
 _ = os.environ.setdefault("LINEAR_API_KEY", "fake-key")
 _ = os.environ.setdefault("LINEAR_PROJECT", "Fake Project")
 
@@ -60,10 +60,10 @@ PATCHES = [
         return_value=fake_data.fake_notifications(),
     ),
     patch(
-        "status_dashboard.clients.sheets.get_tasks_for_date",
+        "status_dashboard.clients.tasks.get_tasks_for_date",
         return_value=fake_data.fake_todoist_tasks(),
     ),
-    patch("status_dashboard.clients.sheets.get_projects", return_value=[]),
+    patch("status_dashboard.clients.tasks.get_projects", return_value=[]),
     patch(
         "status_dashboard.clients.linear.get_my_issues",
         return_value=fake_data.fake_linear_issues(),

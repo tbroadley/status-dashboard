@@ -1,7 +1,7 @@
 [project]
 name = "status-dashboard"
 version = "0.1.0"
-description = "Terminal dashboard for PRs, Todoist, and Linear"
+description = "Terminal dashboard for PRs, S3 tasks, and Linear"
 requires-python = ">=3.11"
 dependencies = [
     "textual>=0.47.0",
@@ -11,6 +11,7 @@ dependencies = [
 
 [project.scripts]
 status-dashboard = "status_dashboard.app:main"
+task-store = "status_dashboard.task_store_cli:main"
 
 [build-system]
 requires = ["hatchling"]

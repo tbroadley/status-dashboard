@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 
-from status_dashboard.clients import github, linear, sheets
+from status_dashboard.clients import github, linear
+from status_dashboard.clients import tasks as sheets
 
 
 def fake_prs() -> list[github.PullRequest]:

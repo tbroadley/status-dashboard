@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import cast
 from unittest.mock import patch
 
-_ = os.environ.setdefault("TASKS_SPREADSHEET_ID", "fake-sheet")
+_ = os.environ.setdefault("TASKS_S3_URI", "s3://example-bucket/tasks.json")
 _ = os.environ.setdefault("LINEAR_API_KEY", "fake-key")
 _ = os.environ.setdefault("LINEAR_PROJECT", "Fake Project")
 

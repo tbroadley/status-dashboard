@@ -5,14 +5,14 @@ from collections.abc import AsyncIterator, Iterator
 from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
-_ = os.environ.setdefault("TASKS_SPREADSHEET_ID", "fake-sheet")
+_ = os.environ.setdefault("TASKS_S3_URI", "s3://example-bucket/tasks.json")
 _ = os.environ.setdefault("LINEAR_API_KEY", "fake-key")
 _ = os.environ.setdefault("LINEAR_PROJECT", "Fake Project")
 
 from textual.pilot import Pilot  # noqa: E402
 
 from status_dashboard.app import StatusDashboard  # noqa: E402
-from status_dashboard.clients import sheets  # noqa: E402
+from status_dashboard.clients import tasks as sheets  # noqa: E402
 
 TODAY = date.today()
 
@@ -40,11 +40,12 @@ def _patched(
     mock_datetime.now = lambda: clock["now"]
     send = MagicMock(return_value=True)
     with (
-        patch("status_dashboard.clients.sheets.get_tasks_for_date", return_value=tasks),
-        patch("status_dashboard.clients.sheets.get_projects", return_value=[]),
+        patch("status_dashboard.clients.tasks.get_tasks_for_date", return_value=tasks),
+        patch("status_dashboard.clients.tasks.get_projects", return_value=[]),
         patch("status_dashboard.clients.github.get_my_prs", return_value=[]),
         patch("status_dashboard.clients.github.get_review_requests", return_value=[]),
         patch("status_dashboard.clients.github.get_notifications", return_value=[]),
+        patch("status_dashboard.clients.linear.get_my_issues", return_value=[]),
         patch("status_dashboard.app.StatusDashboard._check_for_updates"),
         patch("status_dashboard.app.datetime", mock_datetime),
         patch("status_dashboard.notifications.send_desktop_notification", send),

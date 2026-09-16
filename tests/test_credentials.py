@@ -62,8 +62,6 @@ def _bw(
                 returncode=0, stdout=json.dumps({"status": status}), stderr=""
             )
         if command[:3] == ["bw", "get", "item"]:
-            if item_json is None:
-                return MagicMock(returncode=1, stdout="", stderr="Not found.")
             return MagicMock(returncode=0, stdout=json.dumps(item_json), stderr="")
         if command[:2] == ["bw", "unlock"]:
             return MagicMock(

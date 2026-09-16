@@ -122,6 +122,10 @@ AWS CLI 40s (whole process), Linear 10s.
 - Each edit reads data+ETag, writes a unique pre-edit recovery object under
   `<key>.history/`, then uses `If-Match`. Conflicts re-read and reapply by task ID,
   up to three attempts; a failed archive aborts the write. Restore tries once.
+- Uncertain write responses are reconciled with a readback; unresolved outcomes
+  explicitly warn to refresh before retrying. UI order saves share an async lock.
+  On day navigation, clear the prior day's rows and show an unloaded state until
+  the selected day's read succeeds.
 - All location details belong in local config, never source/tests/PR text. Do not
   commit real task data. Tests use synthetic documents and a fake S3 transport.
 - Recurrence still advances locally using `dates.next_occurrence()`; completion

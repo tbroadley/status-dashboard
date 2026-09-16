@@ -65,8 +65,12 @@ uniquely named history object, then writes with `If-Match`. Conflicts re-read an
 reapply the edit, up to three attempts. A failed backup prevents the write.
 Missing, malformed, or inaccessible data is an error, never an empty list.
 Reads/writes require connectivity and valid AWS credentials; offline edits are
-not queued. On read failure the dashboard retains its last successful view and
-shows an error; failed optimistic edits roll back.
+not queued. Lost write responses trigger a readback; if the result cannot be
+confirmed, the error explicitly warns that the save may have succeeded and to
+refresh before retrying. On read failure the dashboard retains its last
+successful view for the same day; navigation shows an unloaded state rather than
+mislabeling old rows. Failed optimistic edits roll back, and order saves are
+serialized so older saves cannot overtake newer moves.
 
 To recover after disk failure, reinstall and reconfigure the same URI. To undo
 an unwanted edit, download a JSON snapshot from `<key>.history/` using your AWS

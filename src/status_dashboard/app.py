@@ -675,6 +675,8 @@ class StatusDashboard(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
+        self._task_order_lock = asyncio.Lock()
+        self._todoist_loaded_date: date | None = None
         dark_mode = _is_macos_dark_mode()
         if dark_mode is not None:
             self.theme = "textual-dark" if dark_mode else "textual-light"
@@ -776,6 +778,10 @@ class StatusDashboard(App[None]):
                 message, title="Task storage unavailable", severity="error", timeout=10
             )
             return None
+
+    async def _save_task_order(self, orders: dict[str, int]) -> bool | None:
+        async with self._task_order_lock:
+            return await self._task_request(sheets.update_day_orders, orders)
 
     @work(exclusive=False)
     async def _refresh_todoist_projects(self) -> None:
@@ -985,6 +991,7 @@ class StatusDashboard(App[None]):
         if tasks is None or selected_date != self._todoist_selected_date:
             return
         self._todoist_tasks = tasks
+        self._todoist_loaded_date = selected_date
         self._update_todoist_panel_title()
         self._render_todoist_table()
 
@@ -1071,6 +1078,9 @@ class StatusDashboard(App[None]):
 
     def _debounced_refresh_todoist(self) -> None:
         """Schedule a debounced refresh of Todoist tasks for day navigation."""
+        self._todoist_tasks = []
+        self._todoist_loaded_date = None
+        self._render_todoist_table()
         if self._todoist_day_debounce_handle:
             self._todoist_day_debounce_handle.stop()
         self._todoist_day_debounce_handle = self.set_timer(
@@ -1095,7 +1105,21 @@ class StatusDashboard(App[None]):
 
         today = date.today()
         selected = self._todoist_selected_date
-        if not self._todoist_tasks:
+        if self._todoist_loaded_date != selected:
+            _ = table.add_row(
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                Text(
+                    "Tasks not loaded for this day — refresh to retry",
+                    style="dim italic",
+                ),
+            )
+        elif not self._todoist_tasks:
             if selected == today:
                 empty_msg = "No tasks for today"
             elif selected == today + timedelta(days=1):
@@ -1377,9 +1401,7 @@ class StatusDashboard(App[None]):
                 _ = self._refresh_todoist()
 
         elif isinstance(action, TodoistMoveAction):
-            success = await self._task_request(
-                sheets.update_day_orders, action.ids_to_orders
-            )
+            success = await self._save_task_order(action.ids_to_orders)
             if success:
                 _ = self._refresh_todoist()
 
@@ -1743,7 +1765,7 @@ class StatusDashboard(App[None]):
         if not new_orders:
             return
 
-        success = await self._task_request(sheets.update_day_orders, new_orders)
+        success = await self._save_task_order(new_orders)
         if not success:
             self.notify("Failed to save task order", severity="error")
             _ = self._refresh_todoist()
@@ -2643,7 +2665,9 @@ class StatusDashboard(App[None]):
             sheets.create_task, content, due_string, description
         )
         if not new_task_id:
-            self.notify("Failed to create task", severity="error")
+            self.notify(
+                "Task save not confirmed; refresh before retrying", severity="error"
+            )
             if temp_id:
                 self._todoist_tasks = [
                     t for t in self._todoist_tasks if t.id != temp_id
@@ -2673,7 +2697,7 @@ class StatusDashboard(App[None]):
             if not task.id.startswith("temp-"):
                 new_orders[task.id] = idx
 
-        _ = await self._task_request(sheets.update_day_orders, new_orders)
+        _ = await self._save_task_order(new_orders)
 
         # Check cursor position RIGHT BEFORE rendering to avoid race condition
         # where user moves cursor during the API call above

@@ -34,6 +34,10 @@ class Conflict(StoreError):
     pass
 
 
+class RequestFailed(StoreError):
+    pass
+
+
 def decode_document(data: bytes) -> Rows:
     try:
         raw = cast(object, json.loads(data))
@@ -130,7 +134,7 @@ class TaskStore:
                 "AWS CLI not found; install a current AWS CLI or set TASKS_AWS_CLI."
             ) from exc
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise StoreError(
+            raise RequestFailed(
                 "AWS request could not complete; check connectivity and retry."
             ) from exc
         if result.returncode:
@@ -162,7 +166,7 @@ class TaskStore:
                 raise StoreError(
                     "Update the AWS CLI: conditional S3 writes are required."
                 )
-            raise StoreError(
+            raise RequestFailed(
                 "S3 request failed; check storage configuration and connectivity."
             )
         try:
@@ -171,7 +175,7 @@ class TaskStore:
                 raise ValueError
             return cast(dict[str, object], metadata)
         except (ValueError, UnicodeError) as exc:
-            raise StoreError("AWS CLI returned invalid metadata.") from exc
+            raise RequestFailed("AWS CLI returned invalid metadata.") from exc
 
     def read(self) -> Snapshot:
         with tempfile.TemporaryDirectory(prefix="task-store-") as directory:
@@ -205,8 +209,22 @@ class TaskStore:
                 ]
             )
 
+    def _write_current(self, rows: Rows, data: bytes, condition: list[str]) -> None:
+        try:
+            self._put(self.key, data, condition)
+        except RequestFailed as error:
+            try:
+                confirmed = self.read().rows == rows
+            except (StoreError, OSError):
+                confirmed = False
+            if not confirmed:
+                raise StoreError(
+                    "Save outcome unknown: it may have reached S3. Check AWS sign-in/connectivity "
+                    + "and refresh the task list before retrying."
+                ) from error
+
     def initialize(self, rows: Rows) -> None:
-        self._put(self.key, encode_document(rows), ["--if-none-match", "*"])
+        self._write_current(rows, encode_document(rows), ["--if-none-match", "*"])
 
     def update(self, edit: Callable[[Rows], bool], *, attempts: int = 3) -> bool:
         for _ in range(attempts):
@@ -221,7 +239,7 @@ class TaskStore:
             history_key = f"{self.key}.history/{stamp}-{uuid.uuid4()}.json"
             self._put(history_key, snapshot.data, ["--if-none-match", "*"])
             try:
-                self._put(self.key, data, ["--if-match", snapshot.etag])
+                self._write_current(rows, data, ["--if-match", snapshot.etag])
                 return True
             except Conflict:
                 continue

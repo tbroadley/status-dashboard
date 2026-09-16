@@ -33,6 +33,7 @@ class FakeS3:
         self.fail: str | None = None
         self.fail_history: bool = False
         self.before_write: Callable[[], None] | None = None
+        self.after_write: Callable[[], None] | None = None
 
     @staticmethod
     def etag(data: bytes) -> str:
@@ -74,6 +75,8 @@ class FakeS3:
         path = Path(command[command.index("--body") + 1])
         assert path.stat().st_mode & 0o777 == 0o600
         self.objects[key] = path.read_bytes()
+        if self.after_write and key == "tasks.json":
+            self.after_write()
         return subprocess.CompletedProcess(command, 0, b"{}", b"")
 
 
@@ -212,6 +215,46 @@ class TestTaskStore(unittest.TestCase):
         with patch("status_dashboard.task_store.subprocess.run", side_effect=fake.run):
             self.assertTrue(TaskStore().update(lambda _rows: True))
         self.assertEqual(len(fake.commands), 1)
+
+    def test_lost_write_response_is_reconciled(self):
+        fake = FakeS3([row("a")])
+
+        def lose_response():
+            raise subprocess.TimeoutExpired("aws", 40)
+
+        fake.after_write = lose_response
+        with patch("status_dashboard.task_store.subprocess.run", side_effect=fake.run):
+            self.assertTrue(
+                TaskStore().update(lambda rows: (rows.append(row("b")) or True))
+            )
+        self.assertEqual(
+            [r[0] for r in decode_document(fake.objects["tasks.json"])], ["a", "b"]
+        )
+        self.assertEqual(len(fake.commands), 4)
+
+    def test_unreconciled_write_is_explicitly_unknown(self):
+        fake = FakeS3([row("a")])
+
+        def disconnect():
+            fake.fail = "connection reset"
+            raise subprocess.TimeoutExpired("aws", 40)
+
+        fake.after_write = disconnect
+        with (
+            patch("status_dashboard.task_store.subprocess.run", side_effect=fake.run),
+            self.assertRaisesRegex(StoreError, "Save outcome unknown"),
+        ):
+            _ = TaskStore().update(lambda rows: (rows.append(row("b")) or True))
+        self.assertEqual(len(fake.commands), 4)
+
+    def test_sso_role_denial_is_not_expired_credentials(self):
+        fake = FakeS3([])
+        fake.fail = "AccessDenied for assumed-role/AWSReservedSSO_Example/user"
+        with (
+            patch("status_dashboard.task_store.subprocess.run", side_effect=fake.run),
+            self.assertRaisesRegex(StoreError, "denied"),
+        ):
+            _ = TaskStore().read()
 
     def test_expired_credentials_and_missing_cli(self):
         fake = FakeS3([])

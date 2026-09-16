@@ -9,10 +9,11 @@ import sys
 import uuid
 import webbrowser
 from collections import defaultdict
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from itertools import groupby
 from pathlib import Path
-from typing import ClassVar, TypeAlias, cast, override
+from typing import ClassVar, ParamSpec, TypeAlias, TypeVar, cast, final, override
 
 from dotenv import find_dotenv, load_dotenv
 from rich.text import Text
@@ -28,7 +29,8 @@ from textual.widgets._footer import FooterKey, FooterLabel, KeyGroup
 
 from status_dashboard import credentials, notifications
 from status_dashboard.clients import github, linear
-from status_dashboard.clients import sheets
+from status_dashboard.clients import tasks as sheets
+from status_dashboard.task_store import StoreError
 from status_dashboard.undo import (
     LinearAssignAction,
     LinearMoveAction,
@@ -44,6 +46,10 @@ from status_dashboard.widgets.create_modals import (
     CreateTodoistTaskModal,
     EditTodoistTaskModal,
 )
+
+
+P = ParamSpec("P")
+T = TypeVar("T")
 
 
 def _get_config_dir() -> Path:
@@ -565,6 +571,7 @@ def _is_macos_dark_mode() -> bool | None:
         return None
 
 
+@final
 class StatusDashboard(App[None]):
     """Terminal dashboard for PRs, Todoist, and Linear."""
 
@@ -668,6 +675,8 @@ class StatusDashboard(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
+        self._task_order_lock = asyncio.Lock()
+        self._todoist_loaded_date: date | None = None
         dark_mode = _is_macos_dark_mode()
         if dark_mode is not None:
             self.theme = "textual-dark" if dark_mode else "textual-light"
@@ -753,10 +762,32 @@ class StatusDashboard(App[None]):
             banner = self.query_one("#update-banner", UpdateBanner)
             banner.show_update(remote_commit[:7])
 
+    async def _task_request(
+        self, function: Callable[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T | None:
+        try:
+            return await asyncio.to_thread(function, *args, **kwargs)
+        except (StoreError, OSError) as error:
+            message = (
+                str(error)
+                if isinstance(error, StoreError)
+                else "Local task storage I/O failed."
+            )
+            logging.getLogger(__name__).warning("Task storage: %s", message)
+            self.notify(
+                message, title="Task storage unavailable", severity="error", timeout=10
+            )
+            return None
+
+    async def _save_task_order(self, orders: dict[str, int]) -> bool | None:
+        async with self._task_order_lock:
+            return await self._task_request(sheets.update_day_orders, orders)
+
     @work(exclusive=False)
     async def _refresh_todoist_projects(self) -> None:
-        """Load Todoist projects in the background so the edit modal opens instantly."""
-        self._todoist_projects = await asyncio.to_thread(sheets.get_projects)
+        projects = await self._task_request(sheets.get_projects)
+        if projects is not None:
+            self._todoist_projects = projects
 
     @work(exclusive=False)
     async def _refresh_my_prs(self) -> None:
@@ -956,10 +987,11 @@ class StatusDashboard(App[None]):
     @work(exclusive=False)
     async def _refresh_todoist(self) -> None:
         selected_date = self._todoist_selected_date
-        tasks = await asyncio.to_thread(sheets.get_tasks_for_date, selected_date)
-        if selected_date != self._todoist_selected_date:
+        tasks = await self._task_request(sheets.get_tasks_for_date, selected_date)
+        if tasks is None or selected_date != self._todoist_selected_date:
             return
         self._todoist_tasks = tasks
+        self._todoist_loaded_date = selected_date
         self._update_todoist_panel_title()
         self._render_todoist_table()
 
@@ -974,7 +1006,9 @@ class StatusDashboard(App[None]):
         """
         today = date.today()
         today_str = today.isoformat()
-        tasks = await asyncio.to_thread(sheets.get_tasks_for_date, today)
+        tasks = await self._task_request(sheets.get_tasks_for_date, today)
+        if tasks is None:
+            return
         now = datetime.now()
 
         for task in tasks:
@@ -1044,6 +1078,9 @@ class StatusDashboard(App[None]):
 
     def _debounced_refresh_todoist(self) -> None:
         """Schedule a debounced refresh of Todoist tasks for day navigation."""
+        self._todoist_tasks = []
+        self._todoist_loaded_date = None
+        self._render_todoist_table()
         if self._todoist_day_debounce_handle:
             self._todoist_day_debounce_handle.stop()
         self._todoist_day_debounce_handle = self.set_timer(
@@ -1068,7 +1105,21 @@ class StatusDashboard(App[None]):
 
         today = date.today()
         selected = self._todoist_selected_date
-        if not self._todoist_tasks:
+        if self._todoist_loaded_date != selected:
+            _ = table.add_row(
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                Text(
+                    "Tasks not loaded for this day — refresh to retry",
+                    style="dim italic",
+                ),
+            )
+        elif not self._todoist_tasks:
             if selected == today:
                 empty_msg = "No tasks for today"
             elif selected == today + timedelta(days=1):
@@ -1338,21 +1389,19 @@ class StatusDashboard(App[None]):
         success = False
 
         if isinstance(action, TodoistCompleteAction):
-            success = await asyncio.to_thread(sheets.reopen_task, action.task_id)
+            success = await self._task_request(sheets.reopen_task, action.task_id)
             if success:
                 _ = self._refresh_todoist()
 
         elif isinstance(action, TodoistDeferAction):
-            success = await asyncio.to_thread(
+            success = await self._task_request(
                 sheets.set_due_date, action.task_id, action.original_due_date
             )
             if success:
                 _ = self._refresh_todoist()
 
         elif isinstance(action, TodoistMoveAction):
-            success = await asyncio.to_thread(
-                sheets.update_day_orders, action.ids_to_orders
-            )
+            success = await self._save_task_order(action.ids_to_orders)
             if success:
                 _ = self._refresh_todoist()
 
@@ -1480,7 +1529,7 @@ class StatusDashboard(App[None]):
         removed_task: sheets.Task | None,
         removed_index: int,
     ) -> None:
-        success = await asyncio.to_thread(sheets.complete_task, task_id)
+        success = await self._task_request(sheets.complete_task, task_id)
         if success:
             description = (
                 f"Complete: {task_name[:30]}" if task_name else "Complete task"
@@ -1554,14 +1603,14 @@ class StatusDashboard(App[None]):
         removed_task: sheets.Task | None,
         removed_index: int,
     ) -> None:
-        task = await asyncio.to_thread(sheets.get_task, task_id)
+        task = await self._task_request(sheets.get_task, task_id)
         due_raw = task.get("due") if task else None
         original_due = cast(
             str | None,
             cast(dict[str, object], due_raw).get("date") if due_raw else None,
         )
 
-        success = await asyncio.to_thread(sheets.defer_task, task_id)
+        success = await self._task_request(sheets.defer_task, task_id)
         if success:
             description = f"Defer: {task_name[:30]}" if task_name else "Defer task"
             self._undo_stack.push(
@@ -1646,7 +1695,7 @@ class StatusDashboard(App[None]):
         removed_task: sheets.Task | None,
         removed_index: int,
     ) -> None:
-        success = await asyncio.to_thread(sheets.delete_task, task_id)
+        success = await self._task_request(sheets.delete_task, task_id)
         if success:
             self.notify("Task deleted")
         else:
@@ -1716,7 +1765,7 @@ class StatusDashboard(App[None]):
         if not new_orders:
             return
 
-        success = await asyncio.to_thread(sheets.update_day_orders, new_orders)
+        success = await self._save_task_order(new_orders)
         if not success:
             self.notify("Failed to save task order", severity="error")
             _ = self._refresh_todoist()
@@ -1746,7 +1795,7 @@ class StatusDashboard(App[None]):
     async def _do_reschedule_overdue_to_today(self, tasks: list[sheets.Task]) -> None:
         success_count = 0
         for task in tasks:
-            success = await asyncio.to_thread(
+            success = await self._task_request(
                 sheets.reschedule_to_today,
                 task.id,
                 task.is_recurring,
@@ -1806,7 +1855,7 @@ class StatusDashboard(App[None]):
 
     @work(exclusive=False)
     async def _do_open_task_link(self, task_id: str) -> None:
-        task = await asyncio.to_thread(sheets.get_task, task_id)
+        task = await self._task_request(sheets.get_task, task_id)
         if not task:
             self.notify("Failed to fetch task", severity="error")
             return
@@ -2612,11 +2661,13 @@ class StatusDashboard(App[None]):
     async def _do_create_todoist_task(
         self, content: str, due_string: str, description: str, temp_id: str | None
     ) -> None:
-        new_task_id = await asyncio.to_thread(
+        new_task_id = await self._task_request(
             sheets.create_task, content, due_string, description
         )
         if not new_task_id:
-            self.notify("Failed to create task", severity="error")
+            self.notify(
+                "Task save not confirmed; refresh before retrying", severity="error"
+            )
             if temp_id:
                 self._todoist_tasks = [
                     t for t in self._todoist_tasks if t.id != temp_id
@@ -2635,7 +2686,7 @@ class StatusDashboard(App[None]):
         for task in self._todoist_tasks:
             if task.id == temp_id:
                 task.id = new_task_id
-                task.url = sheets.spreadsheet_url()
+                task.url = ""
                 updated_task = task
                 break
 
@@ -2646,7 +2697,7 @@ class StatusDashboard(App[None]):
             if not task.id.startswith("temp-"):
                 new_orders[task.id] = idx
 
-        _ = await asyncio.to_thread(sheets.update_day_orders, new_orders)
+        _ = await self._save_task_order(new_orders)
 
         # Check cursor position RIGHT BEFORE rendering to avoid race condition
         # where user moves cursor during the API call above
@@ -2725,13 +2776,15 @@ class StatusDashboard(App[None]):
     @work(exclusive=False)
     async def _prepare_edit_todoist_task(self, task_id: str) -> None:
         """Fallback: fetch task data from the API, then show the edit modal."""
-        task_data = await asyncio.to_thread(sheets.get_task, task_id)
+        task_data = await self._task_request(sheets.get_task, task_id)
         if not task_data:
             self.notify("Failed to load task", severity="error")
             return
 
         if not self._todoist_projects:
-            self._todoist_projects = await asyncio.to_thread(sheets.get_projects)
+            projects = await self._task_request(sheets.get_projects)
+            if projects is not None:
+                self._todoist_projects = projects
 
         content = cast(str, task_data.get("content", ""))
         description = cast(str, task_data.get("description", ""))
@@ -2771,7 +2824,7 @@ class StatusDashboard(App[None]):
         project_id: str | None,
         due_string: str | None,
     ) -> None:
-        success = await asyncio.to_thread(
+        success = await self._task_request(
             sheets.update_task,
             task_id,
             content=content,

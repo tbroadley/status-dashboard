@@ -677,6 +677,8 @@ class StatusDashboard(App[None]):
         super().__init__()
         self._task_order_lock = asyncio.Lock()
         self._todoist_loaded_date: date | None = None
+        self._todoist_pending_completions: set[str] = set()
+        self._todoist_completion_version = 0
         dark_mode = _is_macos_dark_mode()
         if dark_mode is not None:
             self.theme = "textual-dark" if dark_mode else "textual-light"
@@ -987,10 +989,16 @@ class StatusDashboard(App[None]):
     @work(exclusive=False)
     async def _refresh_todoist(self) -> None:
         selected_date = self._todoist_selected_date
-        tasks = await self._task_request(sheets.get_tasks_for_date, selected_date)
-        if tasks is None or selected_date != self._todoist_selected_date:
-            return
-        self._todoist_tasks = tasks
+        while True:
+            completion_version = self._todoist_completion_version
+            tasks = await self._task_request(sheets.get_tasks_for_date, selected_date)
+            if tasks is None or selected_date != self._todoist_selected_date:
+                return
+            if completion_version == self._todoist_completion_version:
+                break
+        self._todoist_tasks = [
+            task for task in tasks if task.id not in self._todoist_pending_completions
+        ]
         self._todoist_loaded_date = selected_date
         self._update_todoist_panel_title()
         self._render_todoist_table()
@@ -1496,12 +1504,17 @@ class StatusDashboard(App[None]):
                         removed_index = idx
                         break
 
+                self._todoist_pending_completions.add(task_id)
                 if removed_task is not None:
                     _ = self._todoist_tasks.pop(removed_index)
                     self._render_todoist_table()
 
                 _ = self._do_complete_todoist_task(
-                    task_id, task_name, removed_task, removed_index
+                    task_id,
+                    task_name,
+                    removed_task,
+                    removed_index,
+                    self._todoist_selected_date,
                 )
         elif focused.id == "linear-table" and key.startswith("linear:"):
             self.action_set_linear_state("done")
@@ -1528,8 +1541,13 @@ class StatusDashboard(App[None]):
         task_name: str | None,
         removed_task: sheets.Task | None,
         removed_index: int,
+        removed_date: date,
     ) -> None:
-        success = await self._task_request(sheets.complete_task, task_id)
+        try:
+            success = await self._task_request(sheets.complete_task, task_id)
+        finally:
+            self._todoist_pending_completions.discard(task_id)
+            self._todoist_completion_version += 1
         if success:
             description = (
                 f"Complete: {task_name[:30]}" if task_name else "Complete task"
@@ -1543,8 +1561,12 @@ class StatusDashboard(App[None]):
             self._last_action_undoable = True
             self.notify("Task completed!")
         else:
-            # Rollback: restore the task to its original position
-            if removed_task is not None and removed_index >= 0:
+            if (
+                removed_task is not None
+                and removed_index >= 0
+                and removed_date == self._todoist_selected_date
+                and removed_date == self._todoist_loaded_date
+            ):
                 self._todoist_tasks.insert(removed_index, removed_task)
                 self._render_todoist_table()
             self.notify("Failed to complete task", severity="error")

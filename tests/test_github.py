@@ -23,6 +23,26 @@ def _make_pr(
     )
 
 
+def _make_notification(
+    reason: str, subject_type: str = "PullRequest", repository: str = "acme/repo"
+) -> dict[str, object]:
+    return {
+        "id": "123",
+        "reason": reason,
+        "unread": True,
+        "updated_at": "2026-01-01T00:00:00Z",
+        "repository": {"full_name": repository},
+        "subject": {
+            "type": subject_type,
+            "title": "Update tests",
+            "url": f"https://api.github.com/repos/{repository}/pulls/1",
+            "latest_comment_url": (
+                f"https://api.github.com/repos/{repository}/pulls/comments/456"
+            ),
+        },
+    }
+
+
 class GetMyPRsTests(unittest.TestCase):
     def test_includes_authored_and_assigned_prs(self) -> None:
         now = datetime.now(timezone.utc)
@@ -151,6 +171,48 @@ class GetReviewRequestsTests(unittest.TestCase):
         self.assertEqual(len(prs), 1)
         self.assertEqual(prs[0].additions, additions)
         self.assertEqual(prs[0].deletions, deletions)
+
+
+class GetNotificationsTests(unittest.TestCase):
+    def test_includes_review_requested_and_comment_notifications(self) -> None:
+        for reason in ("review_requested", "comment"):
+            with self.subTest(reason=reason):
+                with patch.object(
+                    github, "_run_gh_api", return_value=[_make_notification(reason)]
+                ) as run_api:
+                    notifications = github.get_notifications(["acme"])
+
+                run_api.assert_called_once_with("notifications?all=false&per_page=50")
+                self.assertEqual(
+                    notifications,
+                    [
+                        github.Notification(
+                            id="123",
+                            reason=reason,
+                            title="Update tests",
+                            repository="acme/repo",
+                            url="https://github.com/acme/repo/pull/1",
+                            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                            pr_number=1,
+                        )
+                    ],
+                )
+
+    def test_still_excludes_authored_non_pr_and_other_org_notifications(self) -> None:
+        for reason, subject_type, repository in (
+            ("author", "PullRequest", "acme/repo"),
+            ("review_requested", "Issue", "acme/repo"),
+            ("review_requested", "PullRequest", "outside/repo"),
+        ):
+            with self.subTest(
+                reason=reason, subject_type=subject_type, repository=repository
+            ):
+                with patch.object(
+                    github,
+                    "_run_gh_api",
+                    return_value=[_make_notification(reason, subject_type, repository)],
+                ):
+                    self.assertEqual(github.get_notifications(["acme"]), [])
 
 
 if __name__ == "__main__":

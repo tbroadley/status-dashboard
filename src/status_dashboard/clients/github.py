@@ -637,7 +637,7 @@ def get_notifications(orgs: list[str] | None = None) -> list[Notification]:
 
     notifications: list[Notification] = []
     for item in result:
-        if _get_str(item, "reason") in ("review_requested", "author"):
+        if _get_str(item, "reason") == "author":
             continue
 
         subject = _get_dict(item, "subject")

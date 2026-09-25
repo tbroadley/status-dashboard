@@ -81,6 +81,8 @@ class FakeS3:
 
 
 class TestTaskStore(unittest.TestCase):
+    sleeps: list[float] = []
+
     @override
     def setUp(self):
         env = patch.dict(
@@ -88,6 +90,16 @@ class TestTaskStore(unittest.TestCase):
             {"TASKS_S3_URI": "s3://example-bucket/tasks.json", "TASKS_AWS_CLI": "aws"},
         )
         _ = cast(object, self.enterContext(env))
+        self.sleeps = []
+        _ = cast(
+            object,
+            self.enterContext(
+                patch(
+                    "status_dashboard.task_store.time.sleep",
+                    side_effect=self.sleeps.append,
+                )
+            ),
+        )
 
     def test_schema_rejects_bad_data(self):
         for document in [
@@ -168,7 +180,10 @@ class TestTaskStore(unittest.TestCase):
             self.assertRaises(Conflict),
         ):
             _ = TaskStore().update(lambda rows: (rows.append(row("b")) or True))
-        self.assertEqual(counter, 3)
+        self.assertEqual(counter, 6)
+        # Each retry waits longer (with jitter) before re-reading.
+        self.assertEqual(len(self.sleeps), 5)
+        self.assertLess(self.sleeps[0], self.sleeps[-1])
 
     def test_backup_failure_prevents_write(self):
         fake = FakeS3([row("a")])

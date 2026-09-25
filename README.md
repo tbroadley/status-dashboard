@@ -62,15 +62,17 @@ rules, ordering and completion timestamps retain their existing meanings.
 
 Every edit reads the current object and ETag, saves the previous document to a
 uniquely named history object, then writes with `If-Match`. Conflicts re-read and
-reapply the edit, up to three attempts. A failed backup prevents the write.
+reapply the edit, up to six attempts with jittered backoff. A failed backup
+prevents the write.
 Missing, malformed, or inaccessible data is an error, never an empty list.
 Reads/writes require connectivity and valid AWS credentials; offline edits are
 not queued. Lost write responses trigger a readback; if the result cannot be
 confirmed, the error explicitly warns that the save may have succeeded and to
 refresh before retrying. On read failure the dashboard retains its last
 successful view for the same day; navigation shows an unloaded state rather than
-mislabeling old rows. Failed optimistic edits roll back, and order saves are
-serialized so older saves cannot overtake newer moves.
+mislabeling old rows. Failed optimistic edits roll back. The dashboard makes
+its writes one at a time, so older saves cannot overtake newer ones, and a
+refresh cannot undo a change that is still saving.
 
 To recover after disk failure, reinstall and reconfigure the same URI. To undo
 an unwanted edit, download a JSON snapshot from `<key>.history/` using your AWS

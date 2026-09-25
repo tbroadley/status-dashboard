@@ -167,6 +167,21 @@ class ParseDueString(unittest.TestCase):
     def test_unparseable_returns_no_date(self):
         self.assertIsNone(dates.parse_due_string("sometime whenever", NOW).due)
 
+    def test_next_week_is_following_monday(self):
+        self.assertEqual(
+            dates.parse_due_string("next week", NOW).due, date(2026, 8, 10)
+        )
+
+    def test_validity_distinguishes_unparseable_from_cleared(self):
+        for text in ("today", "tomorrow 3pm", "next week", "every day"):
+            with self.subTest(text=text):
+                self.assertTrue(dates.is_valid_due_string(text))
+        for text in ("sometime whenever", "3/15"):
+            with self.subTest(text=text):
+                self.assertFalse(dates.is_valid_due_string(text, allow_no_date=True))
+        self.assertFalse(dates.is_valid_due_string("no date"))
+        self.assertTrue(dates.is_valid_due_string("no date", allow_no_date=True))
+
     def test_production_rules_from_export(self):
         """The five recurrence rules that exist in the live Todoist account."""
         rules = (

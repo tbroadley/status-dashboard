@@ -3,8 +3,10 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import random
 import subprocess
 import tempfile
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -24,6 +26,8 @@ HEADER = [
     "completed_at",
 ]
 Rows = list[list[str]]
+CONFLICT_BACKOFF = 0.25
+CONFLICT_BACKOFF_CAP = 2.0
 
 
 class StoreError(Exception):
@@ -226,8 +230,19 @@ class TaskStore:
     def initialize(self, rows: Rows) -> None:
         self._write_current(rows, encode_document(rows), ["--if-none-match", "*"])
 
-    def update(self, edit: Callable[[Rows], bool], *, attempts: int = 3) -> bool:
-        for _ in range(attempts):
+    def update(self, edit: Callable[[Rows], bool], *, attempts: int = 6) -> bool:
+        """Apply `edit` to the latest rows and write them conditionally.
+
+        Another client writing between our read and write makes the conditional
+        put fail; retry against a fresh read after a jittered, growing pause so
+        writers that collided once are unlikely to collide again.
+        """
+        for attempt in range(attempts):
+            if attempt:
+                time.sleep(
+                    min(CONFLICT_BACKOFF_CAP, CONFLICT_BACKOFF * 2.0 ** (attempt - 1))
+                    * random.uniform(0.5, 1.5)
+                )
             snapshot = self.read()
             rows = [row.copy() for row in snapshot.rows]
             if not edit(rows):

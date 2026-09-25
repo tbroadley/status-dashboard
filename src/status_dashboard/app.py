@@ -629,13 +629,9 @@ class StatusDashboard(App[None]):
     _undo_stack: UndoStack  # pyright: ignore[reportUninitializedInstanceVariable]
     _my_prs: list[github.PullRequest]  # pyright: ignore[reportUninitializedInstanceVariable]
     _review_requests: list[github.ReviewRequest]  # pyright: ignore[reportUninitializedInstanceVariable]
-    _todoist_tasks: list[sheets.Task]  # pyright: ignore[reportUninitializedInstanceVariable]
-    _todoist_pending_orders: dict[str, int] | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_debounce_handle: Timer | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_day_debounce_handle: Timer | None  # pyright: ignore[reportUninitializedInstanceVariable]
-    _todoist_restore_key: str | None  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_selected_date: date  # pyright: ignore[reportUninitializedInstanceVariable]
-    _todoist_optimistic_tasks: dict[str, sheets.Task]  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_notified: set[str]  # pyright: ignore[reportUninitializedInstanceVariable]
     _todoist_notify_seeded: bool  # pyright: ignore[reportUninitializedInstanceVariable]
     _linear_issues: list[linear.Issue]  # pyright: ignore[reportUninitializedInstanceVariable]
@@ -675,10 +671,24 @@ class StatusDashboard(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
-        self._task_order_lock = asyncio.Lock()
+        # Task view model: the rows last read from S3 for `_todoist_loaded_date`,
+        # with optimistic changes whose writes haven't finished layered on top.
+        # `_todoist_tasks` is the derived list the table shows; rebuild it with
+        # `_render_todoist_table` rather than editing it directly.
+        self._todoist_server_tasks: list[sheets.Task] = []
+        self._todoist_tasks: list[sheets.Task] = []
         self._todoist_loaded_date: date | None = None
-        self._todoist_pending_completions: set[str] = set()
-        self._todoist_completion_version = 0
+        self._todoist_pending_creates: dict[str, sheets.Task] = {}
+        self._todoist_pending_removals: set[str] = set()
+        self._todoist_order_overlay: dict[str, int] | None = None
+        # Writes are serialized so they reach S3 in the order they were made and
+        # don't race each other's conditional puts. The version counts finished
+        # writes: a read that overlapped one may predate it, so it is retried.
+        self._task_write_lock = asyncio.Lock()
+        self._todoist_write_version = 0
+        # Reads are numbered so a slow, older read never replaces a newer one.
+        self._todoist_read_seq = 0
+        self._todoist_applied_seq = 0
         dark_mode = _is_macos_dark_mode()
         if dark_mode is not None:
             self.theme = "textual-dark" if dark_mode else "textual-light"
@@ -687,13 +697,9 @@ class StatusDashboard(App[None]):
         self._undo_stack = UndoStack()
         self._my_prs = []
         self._review_requests = []
-        self._todoist_tasks = []
-        self._todoist_pending_orders = None
         self._todoist_debounce_handle = None
         self._todoist_day_debounce_handle = None
-        self._todoist_restore_key = None
         self._todoist_selected_date = date.today()
-        self._todoist_optimistic_tasks = {}
         self._todoist_notified = set()
         self._todoist_notify_seeded = False
         self._linear_issues = []
@@ -781,9 +787,23 @@ class StatusDashboard(App[None]):
             )
             return None
 
+    async def _task_write(
+        self, function: Callable[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T | None:
+        """Run a task mutation after any earlier ones have finished.
+
+        Callers reconcile their optimistic state immediately after this returns,
+        with no intervening await, so no refresh can observe the bumped version
+        with stale overlay state.
+        """
+        async with self._task_write_lock:
+            try:
+                return await self._task_request(function, *args, **kwargs)
+            finally:
+                self._todoist_write_version += 1
+
     async def _save_task_order(self, orders: dict[str, int]) -> bool | None:
-        async with self._task_order_lock:
-            return await self._task_request(sheets.update_day_orders, orders)
+        return await self._task_write(sheets.update_day_orders, orders)
 
     @work(exclusive=False)
     async def _refresh_todoist_projects(self) -> None:
@@ -857,7 +877,7 @@ class StatusDashboard(App[None]):
                 )
 
             if selected_key:
-                self._restore_cursor_by_key(table, selected_key)
+                _ = self._restore_cursor_by_key(table, selected_key)
         table.refresh_line_numbers()
         self._recompute_layout()
 
@@ -918,7 +938,7 @@ class StatusDashboard(App[None]):
                 )
 
             if selected_key:
-                self._restore_cursor_by_key(table, selected_key)
+                _ = self._restore_cursor_by_key(table, selected_key)
         table.refresh_line_numbers()
         self._recompute_layout()
 
@@ -955,7 +975,7 @@ class StatusDashboard(App[None]):
                 )
 
             if selected_key:
-                self._restore_cursor_by_key(table, selected_key)
+                _ = self._restore_cursor_by_key(table, selected_key)
         table.refresh_line_numbers()
         self._recompute_layout()
 
@@ -967,41 +987,93 @@ class StatusDashboard(App[None]):
             return str(cell_key.row_key.value)
         return None
 
-    def _get_row_key_above(self, table: DataTable[str | Text]) -> str | None:
-        if table.cursor_row == 0 or table.row_count == 0:
-            return None
-        cell_key = table.coordinate_to_cell_key(Coordinate(table.cursor_row - 1, 0))
-        if cell_key.row_key and cell_key.row_key.value:
-            return str(cell_key.row_key.value)
-        return None
-
     def _restore_cursor_by_key(
         self, table: DataTable[str | Text], row_key: str | None
-    ) -> None:
+    ) -> bool:
         if not row_key or table.row_count == 0:
-            return
+            return False
         for idx in range(table.row_count):
             cell_key = table.coordinate_to_cell_key(Coordinate(idx, 0))
             if cell_key.row_key and str(cell_key.row_key.value) == row_key:
                 table.move_cursor(row=idx)
-                return
+                return True
+        return False
+
+    @staticmethod
+    def _todoist_row_key(task: sheets.Task) -> str:
+        return f"todoist:{task.id}:{task.url}"
+
+    def _selected_todoist_task(self) -> sheets.Task | None:
+        """The task under the cursor, if the task table is focused."""
+        focused = self.focused
+        if not isinstance(focused, VimDataTable) or focused.id != "todoist-table":
+            return None
+        key = self._get_selected_row_key(focused)
+        return next(
+            (t for t in self._todoist_tasks if self._todoist_row_key(t) == key), None
+        )
 
     @work(exclusive=False)
     async def _refresh_todoist(self) -> None:
         selected_date = self._todoist_selected_date
         while True:
-            completion_version = self._todoist_completion_version
+            write_version = self._todoist_write_version
+            self._todoist_read_seq += 1
+            read_seq = self._todoist_read_seq
             tasks = await self._task_request(sheets.get_tasks_for_date, selected_date)
             if tasks is None or selected_date != self._todoist_selected_date:
                 return
-            if completion_version == self._todoist_completion_version:
+            if read_seq < self._todoist_applied_seq:
+                return
+            if write_version == self._todoist_write_version:
                 break
-        self._todoist_tasks = [
-            task for task in tasks if task.id not in self._todoist_pending_completions
-        ]
+        self._todoist_applied_seq = read_seq
+        self._todoist_server_tasks = tasks
         self._todoist_loaded_date = selected_date
         self._update_todoist_panel_title()
         self._render_todoist_table()
+
+    def _derive_todoist_tasks(self) -> list[sheets.Task]:
+        """The loaded rows with pending optimistic changes applied.
+
+        Every overlay is idempotent, so it doesn't matter whether the read
+        already reflects a write that is still in flight.
+        """
+        day = self._todoist_loaded_date
+        if day is None:
+            return []
+        tasks = [
+            task
+            for task in self._todoist_server_tasks
+            if task.id not in self._todoist_pending_removals
+        ]
+        present = {task.id for task in tasks}
+        tasks += [
+            task
+            for task_id, task in self._todoist_pending_creates.items()
+            if task_id not in present and sheets.is_due_on(task.due_date, day)
+        ]
+        orders = self._todoist_order_overlay or {}
+        tasks.sort(key=lambda task: orders.get(task.id, task.day_order))
+        return tasks
+
+    def _commit_todoist_orders(self, orders: dict[str, int]) -> None:
+        """Record saved orders in the loaded rows and retire their overlay."""
+        for task in self._todoist_server_tasks:
+            if task.id in orders:
+                task.day_order = orders[task.id]
+        self._todoist_server_tasks.sort(key=lambda task: task.day_order)
+        self._drop_todoist_order_overlay(orders)
+
+    def _drop_todoist_order_overlay(self, orders: dict[str, int]) -> None:
+        # A later reorder replaces the overlay; its own write retires it.
+        if self._todoist_order_overlay is orders:
+            self._todoist_order_overlay = None
+
+    def _set_todoist_order_overlay(self, task_ids: list[str]) -> dict[str, int]:
+        orders = {task_id: index for index, task_id in enumerate(task_ids)}
+        self._todoist_order_overlay = orders
+        return orders
 
     @work(exclusive=False)
     async def _check_todoist_due_times(self) -> None:
@@ -1086,7 +1158,7 @@ class StatusDashboard(App[None]):
 
     def _debounced_refresh_todoist(self) -> None:
         """Schedule a debounced refresh of Todoist tasks for day navigation."""
-        self._todoist_tasks = []
+        self._todoist_server_tasks = []
         self._todoist_loaded_date = None
         self._render_todoist_table()
         if self._todoist_day_debounce_handle:
@@ -1099,15 +1171,17 @@ class StatusDashboard(App[None]):
         self._todoist_day_debounce_handle = None
         _ = self._refresh_todoist()
 
-    def _render_todoist_table(self, preserve_cursor: bool = True) -> None:
+    def _render_todoist_table(self, select_key: str | None = None) -> None:
+        """Rebuild the task list and redraw it.
+
+        The cursor goes to `select_key` if given, otherwise stays on the task it
+        was on. If that task is gone, the cursor keeps its row position, so the
+        task below slides under it.
+        """
+        self._todoist_tasks = self._derive_todoist_tasks()
         table = self.query_one("#todoist-table", TodoistDataTable)
-        if self._todoist_restore_key:
-            selected_key = self._todoist_restore_key
-            self._todoist_restore_key = None
-        elif preserve_cursor:
-            selected_key = self._get_selected_row_key(table)
-        else:
-            selected_key = None
+        previous_row = table.cursor_row
+        selected_key = select_key or self._get_selected_row_key(table)
 
         _ = table.clear()
 
@@ -1164,11 +1238,11 @@ class StatusDashboard(App[None]):
                     desc_display,
                     link_display,
                     content,
-                    key=f"todoist:{task.id}:{task.url}",
+                    key=self._todoist_row_key(task),
                 )
 
-            if selected_key:
-                self._restore_cursor_by_key(table, selected_key)
+            if not self._restore_cursor_by_key(table, selected_key):
+                table.move_cursor(row=min(previous_row, table.row_count - 1))
         table.refresh_line_numbers()
         self._recompute_layout()
 
@@ -1205,7 +1279,7 @@ class StatusDashboard(App[None]):
                 )
 
             if selected_key:
-                self._restore_cursor_by_key(table, selected_key)
+                _ = self._restore_cursor_by_key(table, selected_key)
         table.refresh_line_numbers()
         self._recompute_layout()
 
@@ -1397,12 +1471,12 @@ class StatusDashboard(App[None]):
         success = False
 
         if isinstance(action, TodoistCompleteAction):
-            success = await self._task_request(sheets.reopen_task, action.task_id)
+            success = await self._task_write(sheets.reopen_task, action.task_id)
             if success:
                 _ = self._refresh_todoist()
 
         elif isinstance(action, TodoistDeferAction):
-            success = await self._task_request(
+            success = await self._task_write(
                 sheets.set_due_date, action.task_id, action.original_due_date
             )
             if success:
@@ -1478,97 +1552,45 @@ class StatusDashboard(App[None]):
         if not isinstance(focused, VimDataTable):
             return
 
-        if focused.row_count == 0:
-            return
-
-        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
-        if not cell_key.row_key or not cell_key.row_key.value:
-            return
-
-        key = str(cell_key.row_key.value)
-
-        if focused.id == "todoist-table" and key.startswith("todoist:"):
-            # Key format: "todoist:{task_id}:{url}"
-            parts = key.split(":", 2)
-            if len(parts) >= 2:
-                task_id = parts[1]
-                task_name = self._get_row_content(focused)
-                self._todoist_restore_key = self._get_row_key_above(focused)
-
-                # Optimistic update: find and remove task from list
-                removed_task: sheets.Task | None = None
-                removed_index: int = -1
-                for idx, task in enumerate(self._todoist_tasks):
-                    if task.id == task_id:
-                        removed_task = task
-                        removed_index = idx
-                        break
-
-                self._todoist_pending_completions.add(task_id)
-                if removed_task is not None:
-                    _ = self._todoist_tasks.pop(removed_index)
-                    self._render_todoist_table()
-
-                _ = self._do_complete_todoist_task(
-                    task_id,
-                    task_name,
-                    removed_task,
-                    removed_index,
-                    self._todoist_selected_date,
-                )
-        elif focused.id == "linear-table" and key.startswith("linear:"):
-            self.action_set_linear_state("done")
+        if focused.id == "todoist-table":
+            task = self._selected_todoist_task()
+            if task is not None:
+                self._remove_todoist_task_optimistically(task.id)
+                _ = self._do_complete_todoist_task(task.id, task.content)
+        elif focused.id == "linear-table":
+            if (self._get_selected_row_key(focused) or "").startswith("linear:"):
+                self.action_set_linear_state("done")
         else:
             self.notify(
                 "Can only complete Todoist tasks or Linear issues", severity="warning"
             )
 
-    def _get_row_content(self, table: DataTable[str | Text]) -> str:
-        """Get the content/title column text from the current row."""
-        if table.row_count == 0:
-            return ""
-        try:
-            row_data = table.get_row_at(table.cursor_row)
-            col_idx = 5 if table.id == "todoist-table" else 2
-            return str(row_data[col_idx]) if len(row_data) > col_idx else ""
-        except Exception:
-            return ""
+    def _remove_todoist_task_optimistically(self, task_id: str) -> None:
+        self._todoist_pending_removals.add(task_id)
+        self._render_todoist_table()
+
+    def _finish_todoist_removal(self, task_id: str, success: bool) -> None:
+        """Retire a pending removal: drop the task for good, or show it again."""
+        self._todoist_pending_removals.discard(task_id)
+        if success:
+            self._todoist_server_tasks = [
+                task for task in self._todoist_server_tasks if task.id != task_id
+            ]
+        self._render_todoist_table()
 
     @work(exclusive=False)
-    async def _do_complete_todoist_task(
-        self,
-        task_id: str,
-        task_name: str | None,
-        removed_task: sheets.Task | None,
-        removed_index: int,
-        removed_date: date,
-    ) -> None:
-        try:
-            success = await self._task_request(sheets.complete_task, task_id)
-        finally:
-            self._todoist_pending_completions.discard(task_id)
-            self._todoist_completion_version += 1
+    async def _do_complete_todoist_task(self, task_id: str, task_name: str) -> None:
+        success = await self._task_write(sheets.complete_task, task_id)
+        self._finish_todoist_removal(task_id, bool(success))
         if success:
-            description = (
-                f"Complete: {task_name[:30]}" if task_name else "Complete task"
-            )
             self._undo_stack.push(
                 TodoistCompleteAction(
-                    task_id=task_id,
-                    description=description,
+                    task_id=task_id, description=f"Complete: {task_name[:30]}"
                 )
             )
             self._last_action_undoable = True
             self.notify("Task completed!")
         else:
-            if (
-                removed_task is not None
-                and removed_index >= 0
-                and removed_date == self._todoist_selected_date
-                and removed_date == self._todoist_loaded_date
-            ):
-                self._todoist_tasks.insert(removed_index, removed_task)
-                self._render_todoist_table()
             self.notify("Failed to complete task", severity="error")
 
     def action_defer_task(self) -> None:
@@ -1581,50 +1603,13 @@ class StatusDashboard(App[None]):
             self.notify("Can only defer Todoist tasks", severity="warning")
             return
 
-        if focused.row_count == 0:
-            return
-
-        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
-        if not cell_key.row_key or not cell_key.row_key.value:
-            return
-
-        key = str(cell_key.row_key.value)
-
-        if not key.startswith("todoist:"):
-            return
-
-        # Key format: "todoist:{task_id}:{url}"
-        parts = key.split(":", 2)
-        if len(parts) >= 2:
-            task_id = parts[1]
-            task_name = self._get_row_content(focused)
-            self._todoist_restore_key = self._get_row_key_above(focused)
-
-            # Optimistic update: find and remove task from list
-            removed_task: sheets.Task | None = None
-            removed_index: int = -1
-            for idx, task in enumerate(self._todoist_tasks):
-                if task.id == task_id:
-                    removed_task = task
-                    removed_index = idx
-                    break
-
-            if removed_task is not None:
-                _ = self._todoist_tasks.pop(removed_index)
-                self._render_todoist_table()
-
-            _ = self._do_defer_todoist_task(
-                task_id, task_name, removed_task, removed_index
-            )
+        task = self._selected_todoist_task()
+        if task is not None:
+            self._remove_todoist_task_optimistically(task.id)
+            _ = self._do_defer_todoist_task(task.id, task.content)
 
     @work(exclusive=False)
-    async def _do_defer_todoist_task(
-        self,
-        task_id: str,
-        task_name: str | None,
-        removed_task: sheets.Task | None,
-        removed_index: int,
-    ) -> None:
+    async def _do_defer_todoist_task(self, task_id: str, task_name: str) -> None:
         task = await self._task_request(sheets.get_task, task_id)
         due_raw = task.get("due") if task else None
         original_due = cast(
@@ -1632,23 +1617,19 @@ class StatusDashboard(App[None]):
             cast(dict[str, object], due_raw).get("date") if due_raw else None,
         )
 
-        success = await self._task_request(sheets.defer_task, task_id)
+        success = await self._task_write(sheets.defer_task, task_id)
+        self._finish_todoist_removal(task_id, bool(success))
         if success:
-            description = f"Defer: {task_name[:30]}" if task_name else "Defer task"
             self._undo_stack.push(
                 TodoistDeferAction(
                     task_id=task_id,
                     original_due_date=original_due,
-                    description=description,
+                    description=f"Defer: {task_name[:30]}",
                 )
             )
             self._last_action_undoable = True
             self.notify("Task deferred to next working day")
         else:
-            # Rollback: restore the task to its original position
-            if removed_task is not None and removed_index >= 0:
-                self._todoist_tasks.insert(removed_index, removed_task)
-                self._render_todoist_table()
             self.notify("Failed to defer task", severity="error")
 
     def action_delete_task(self) -> None:
@@ -1661,70 +1642,35 @@ class StatusDashboard(App[None]):
             self.notify("Can only delete Todoist tasks", severity="warning")
             return
 
-        if focused.row_count == 0:
+        task = self._selected_todoist_task()
+        if task is None:
             return
+        task_id = task.id
+        task_name = (
+            task.content[:40] + "..." if len(task.content) > 40 else task.content
+        )
 
-        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
-        if not cell_key.row_key or not cell_key.row_key.value:
-            return
+        def handle_delete_confirmation(confirmed: bool) -> None:
+            if confirmed:
+                self._remove_todoist_task_optimistically(task_id)
+                _ = self._do_delete_todoist_task(task_id)
 
-        key = str(cell_key.row_key.value)
-
-        if not key.startswith("todoist:"):
-            return
-
-        parts = key.split(":", 2)
-        if len(parts) >= 2:
-            task_id = parts[1]
-            # Find task name and task object for confirmation message and rollback
-            task_name = "this task"
-            task_to_delete: sheets.Task | None = None
-            task_index: int = -1
-            for idx, task in enumerate(self._todoist_tasks):
-                if task.id == task_id:
-                    task_name = (
-                        task.content[:40] + "..."
-                        if len(task.content) > 40
-                        else task.content
-                    )
-                    task_to_delete = task
-                    task_index = idx
-                    break
-
-            def handle_delete_confirmation(confirmed: bool) -> None:
-                if confirmed:
-                    # Optimistic update: remove task from list immediately
-                    if task_to_delete is not None and task_index >= 0:
-                        _ = self._todoist_tasks.pop(task_index)
-                        self._render_todoist_table()
-                    _ = self._do_delete_todoist_task(
-                        task_id, task_to_delete, task_index
-                    )
-
-            self.push_screen(  # pyright: ignore[reportCallIssue]
-                ConfirmationModal(
-                    title="Delete Task",
-                    message=f"Delete '{task_name}'?",
-                    confirm_label="Delete",
-                ),
-                handle_delete_confirmation,  # pyright: ignore[reportArgumentType]
-            )
+        self.push_screen(  # pyright: ignore[reportCallIssue]
+            ConfirmationModal(
+                title="Delete Task",
+                message=f"Delete '{task_name}'?",
+                confirm_label="Delete",
+            ),
+            handle_delete_confirmation,  # pyright: ignore[reportArgumentType]
+        )
 
     @work(exclusive=False)
-    async def _do_delete_todoist_task(
-        self,
-        task_id: str,
-        removed_task: sheets.Task | None,
-        removed_index: int,
-    ) -> None:
-        success = await self._task_request(sheets.delete_task, task_id)
+    async def _do_delete_todoist_task(self, task_id: str) -> None:
+        success = await self._task_write(sheets.delete_task, task_id)
+        self._finish_todoist_removal(task_id, bool(success))
         if success:
             self.notify("Task deleted")
         else:
-            # Rollback: restore the task to its original position
-            if removed_task is not None and removed_index >= 0:
-                self._todoist_tasks.insert(removed_index, removed_task)
-                self._render_todoist_table()
             self.notify("Failed to delete task", severity="error")
 
     def action_move_task_down(self) -> None:
@@ -1745,22 +1691,21 @@ class StatusDashboard(App[None]):
             self.notify("Can only move Todoist tasks", severity="warning")
             return
 
-        if focused.row_count == 0:
+        task = self._selected_todoist_task()
+        if task is None:
             return
-
-        current_row = focused.cursor_row
+        task_ids = [t.id for t in self._todoist_tasks]
+        current_row = task_ids.index(task.id)
         target_row = current_row + direction
-
-        if target_row < 0 or target_row >= len(self._todoist_tasks):
+        if target_row < 0 or target_row >= len(task_ids):
             return
 
-        self._todoist_tasks[current_row], self._todoist_tasks[target_row] = (
-            self._todoist_tasks[target_row],
-            self._todoist_tasks[current_row],
+        task_ids[current_row], task_ids[target_row] = (
+            task_ids[target_row],
+            task_ids[current_row],
         )
-
-        self._render_todoist_table(preserve_cursor=False)
-        focused.move_cursor(row=target_row)
+        _ = self._set_todoist_order_overlay(task_ids)
+        self._render_todoist_table(select_key=self._todoist_row_key(task))
         row_region = focused._get_row_region(target_row)  # pyright: ignore[reportPrivateUsage]
         _ = focused.scroll_to_region(row_region, center=True, animate=False)
 
@@ -1775,22 +1720,19 @@ class StatusDashboard(App[None]):
 
     @work(exclusive=False)
     async def _flush_todoist_order(self) -> None:
-        """Send current task order to Todoist API."""
+        """Save the order shown on screen."""
         self._todoist_debounce_handle = None
-
-        new_orders = {
-            task.id: idx
-            for idx, task in enumerate(self._todoist_tasks)
-            if not task.id.startswith("temp-")
-        }
-
-        if not new_orders:
+        orders = self._todoist_order_overlay
+        if not orders:
             return
 
-        success = await self._save_task_order(new_orders)
-        if not success:
+        success = await self._save_task_order(orders)
+        if success:
+            self._commit_todoist_orders(orders)
+        else:
+            self._drop_todoist_order_overlay(orders)
             self.notify("Failed to save task order", severity="error")
-            _ = self._refresh_todoist()
+        self._render_todoist_table()
 
     def action_reschedule_overdue_to_today(self) -> None:
         """Reschedule all overdue Todoist tasks to today."""
@@ -1817,7 +1759,7 @@ class StatusDashboard(App[None]):
     async def _do_reschedule_overdue_to_today(self, tasks: list[sheets.Task]) -> None:
         success_count = 0
         for task in tasks:
-            success = await self._task_request(
+            success = await self._task_write(
                 sheets.reschedule_to_today,
                 task.id,
                 task.is_recurring,
@@ -2537,199 +2479,99 @@ class StatusDashboard(App[None]):
     def action_create_todoist_task(self) -> None:
         """Show modal to create a new Todoist task."""
         table = self.query_one("#todoist-table", TodoistDataTable)
-        insert_position = table.cursor_row or 0
+        anchor_key = self._get_selected_row_key(table)
+        anchor_row = table.cursor_row
 
         def handle_result(result: dict[str, str] | None) -> None:
-            self._handle_todoist_task_created(result, insert_position)
+            if result:
+                self._handle_todoist_task_created(result, anchor_key, anchor_row)
 
         self._create_todoist_modal.default_due_date = self._todoist_selected_date
         _ = self.push_screen("create-todoist-task", handle_result)
 
     def _handle_todoist_task_created(
-        self, result: dict[str, str] | None, insert_position: int
+        self, result: dict[str, str], anchor_key: str | None, anchor_row: int
     ) -> None:
-        """Handle the result from the Todoist task creation modal."""
-        if result:
-            content = result["content"]
-            due_string = result["due_string"]
-            description = result.get("description", "")
+        """Show the new task immediately above the row the cursor was on.
 
-            # Calculate the actual due date for the optimistic task
-            optimistic_due_date = self._calculate_due_date(due_string)
-
-            # Only show optimistic task if we can parse the date and it
-            # matches the currently displayed day
-            show_optimistic = (
-                optimistic_due_date is not None
-                and optimistic_due_date == self._todoist_selected_date
-            )
-
-            if show_optimistic and optimistic_due_date is not None:
-                temp_id = f"temp-{uuid.uuid4()}"
-                optimistic_task = sheets.Task(
-                    id=temp_id,
-                    content=content,
-                    is_completed=False,
-                    url="",
-                    day_order=insert_position,
-                    due_date=optimistic_due_date.isoformat(),
-                    due_time=None,
-                    comment_count=0,
-                )
-
-                self._todoist_tasks.insert(insert_position, optimistic_task)
-                self._todoist_optimistic_tasks[temp_id] = optimistic_task
-                self._render_todoist_table(preserve_cursor=False)
-
-                table = self.query_one("#todoist-table", TodoistDataTable)
-                table.move_cursor(row=insert_position)
-
-                _ = self._do_create_todoist_task(
-                    content, due_string, description, temp_id
-                )
-            else:
-                # Task is for a different day, just create it without optimistic UI
-                _ = self._do_create_todoist_task(content, due_string, description, None)
-
-    _DAY_NAMES: ClassVar[dict[str, int]] = {
-        "monday": 0,
-        "tuesday": 1,
-        "wednesday": 2,
-        "thursday": 3,
-        "friday": 4,
-        "saturday": 5,
-        "sunday": 6,
-    }
-
-    def _calculate_due_date(self, due_string: str) -> date | None:
-        """Calculate the actual due date from a due_string.
-
-        This mirrors Todoist's natural language parsing to predict
-        where the task will appear. Returns None if the due string
-        can't be parsed, meaning we shouldn't show an optimistic update.
+        The task gets its final ID now and is saved with the order shown here,
+        so its row keeps the same key and position once the save lands.
         """
-        today = date.today()
-        normalized = due_string.strip().lower()
+        content = result["content"]
+        due_string = result["due_string"]
+        description = result.get("description", "")
 
-        if normalized in ("today", "tod"):
-            return today
-        if normalized in ("tomorrow", "tom"):
-            return today + timedelta(days=1)
-        if normalized == "next week":
-            return today + timedelta(days=7)
-
-        # "next <day>" e.g. "next tuesday"
-        next_match = re.match(r"^next\s+(\w+)$", normalized)
-        if next_match:
-            day_name = next_match.group(1)
-            if day_name in self._DAY_NAMES:
-                target_weekday = self._DAY_NAMES[day_name]
-                days_ahead = (target_weekday - today.weekday()) % 7
-                # "next X" always goes to the following week
-                days_ahead += 7
-                return today + timedelta(days=days_ahead)
-
-        # Bare day name e.g. "tuesday", "fri"
-        day_abbrevs: dict[str, int] = {
-            "mon": 0,
-            "tue": 1,
-            "wed": 2,
-            "thu": 3,
-            "fri": 4,
-            "sat": 5,
-            "sun": 6,
-        }
-        target_weekday: int | None = self._DAY_NAMES.get(normalized)
-        if target_weekday is None:
-            target_weekday = day_abbrevs.get(normalized)
-        if target_weekday is not None:
-            days_ahead = (target_weekday - today.weekday()) % 7
-            if days_ahead == 0:
-                days_ahead = 7  # Todoist treats bare day name as next occurrence
-            return today + timedelta(days=days_ahead)
-
-        # ISO date format: YYYY-MM-DD
-        iso_match = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", normalized)
-        if iso_match:
-            try:
-                return date(
-                    int(iso_match.group(1)),
-                    int(iso_match.group(2)),
-                    int(iso_match.group(3)),
-                )
-            except ValueError:
-                return None
-
-        # Slash/dot date formats: M/D, M/D/YYYY, M.D, M.D.YYYY
-        slash_match = re.match(
-            r"^(\d{1,2})[/.](\d{1,2})(?:[/.](\d{2,4}))?$", normalized
+        # The list may have changed while the modal was open; insert relative to
+        # the row the cursor was on rather than its old index.
+        keys = [self._todoist_row_key(task) for task in self._todoist_tasks]
+        index = (
+            keys.index(anchor_key) if anchor_key in keys else min(anchor_row, len(keys))
         )
-        if slash_match:
-            month = int(slash_match.group(1))
-            day = int(slash_match.group(2))
-            year_str = slash_match.group(3)
-            year = int(year_str) if year_str else today.year
-            if year < 100:
-                year += 2000
-            try:
-                return date(year, month, day)
-            except ValueError:
-                return None
+        now = datetime.now()
+        task = sheets.new_task(
+            str(uuid.uuid4()),
+            content,
+            due_string,
+            description,
+            day_order=index,
+            now=now,
+        )
 
-        # Unrecognized — don't guess, skip optimistic UI
-        return None
+        orders: dict[str, int] | None = None
+        day = self._todoist_loaded_date
+        if day is not None and sheets.is_due_on(task.due_date, day):
+            task_ids = [t.id for t in self._todoist_tasks]
+            task_ids.insert(index, task.id)
+            orders = self._set_todoist_order_overlay(task_ids)
+            self._todoist_pending_creates[task.id] = task
+            self._render_todoist_table(select_key=self._todoist_row_key(task))
+
+        _ = self._do_create_todoist_task(task, due_string, orders, now)
 
     @work(exclusive=False)
     async def _do_create_todoist_task(
-        self, content: str, due_string: str, description: str, temp_id: str | None
+        self,
+        task: sheets.Task,
+        due_string: str,
+        orders: dict[str, int] | None,
+        now: datetime,
     ) -> None:
-        new_task_id = await self._task_request(
-            sheets.create_task, content, due_string, description
+        created = await self._task_write(
+            sheets.create_task,
+            task.content,
+            due_string,
+            task.description,
+            task_id=task.id,
+            day_orders=orders,
+            now=now,
         )
-        if not new_task_id:
+        _ = self._todoist_pending_creates.pop(task.id, None)
+        if not created:
+            if orders is not None:
+                self._drop_todoist_order_overlay(orders)
+            self._render_todoist_table()
             self.notify(
                 "Task save not confirmed; refresh before retrying", severity="error"
             )
-            if temp_id:
-                self._todoist_tasks = [
-                    t for t in self._todoist_tasks if t.id != temp_id
-                ]
-                _ = self._todoist_optimistic_tasks.pop(temp_id, None)
-                self._render_todoist_table()
             return
 
-        self.notify("Task created!")
-
-        # If no optimistic task was created, we're done
-        if not temp_id:
-            return
-
-        updated_task: sheets.Task | None = None
-        for task in self._todoist_tasks:
-            if task.id == temp_id:
-                task.id = new_task_id
-                task.url = ""
-                updated_task = task
-                break
-
-        _ = self._todoist_optimistic_tasks.pop(temp_id, None)
-
-        new_orders: dict[str, int] = {}
-        for idx, task in enumerate(self._todoist_tasks):
-            if not task.id.startswith("temp-"):
-                new_orders[task.id] = idx
-
-        _ = await self._save_task_order(new_orders)
-
-        # Check cursor position RIGHT BEFORE rendering to avoid race condition
-        # where user moves cursor during the API call above
-        table = self.query_one("#todoist-table", TodoistDataTable)
-        selected_key = self._get_selected_row_key(table)
-        cursor_on_optimistic = selected_key == f"todoist:{temp_id}:"
-
-        if cursor_on_optimistic and updated_task:
-            self._todoist_restore_key = f"todoist:{new_task_id}:{updated_task.url}"
+        day = self._todoist_loaded_date
+        if (
+            day is not None
+            and sheets.is_due_on(task.due_date, day)
+            and all(t.id != task.id for t in self._todoist_server_tasks)
+        ):
+            self._todoist_server_tasks.append(task)
+        self._commit_todoist_orders(orders or {})
         self._render_todoist_table()
+
+        if day is not None and sheets.is_due_on(task.due_date, day):
+            self.notify("Task created!")
+        elif task.due_date:
+            due = date.fromisoformat(task.due_date)
+            self.notify(f"Task created for {due.strftime('%a %b %d')}")
+        else:
+            self.notify("Task created")
 
     def action_edit_todoist_task(self) -> None:
         """Show modal to edit the selected Todoist task."""
@@ -2846,7 +2688,7 @@ class StatusDashboard(App[None]):
         project_id: str | None,
         due_string: str | None,
     ) -> None:
-        success = await self._task_request(
+        success = await self._task_write(
             sheets.update_task,
             task_id,
             content=content,

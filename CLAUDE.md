@@ -121,9 +121,21 @@ AWS CLI 40s (whole process), Linear 10s.
   or substitute an empty list. `task-store` provides explicit create-only initialization/import.
 - Each edit reads data+ETag, writes a unique pre-edit recovery object under
   `<key>.history/`, then uses `If-Match`. Conflicts re-read and reapply by task ID,
-  up to three attempts; a failed archive aborts the write. Restore tries once.
+  up to six attempts with jittered exponential backoff; a failed archive aborts the
+  write. Restore tries once.
 - Uncertain write responses are reconciled with a readback; unresolved outcomes
-  explicitly warn to refresh before retrying. UI order saves share an async lock.
+  explicitly warn to refresh before retrying.
+- The app sends every task write through `StatusDashboard._task_write`, which
+  serializes them, so they reach S3 in order and never race each other's `If-Match`.
+- Task view model: `_todoist_server_tasks` (last applied read) plus pending
+  creates/removals/order overlays; `_render_todoist_table` derives `_todoist_tasks`
+  from them. Overlays are idempotent, so a read that already reflects an in-flight
+  write is harmless. A read that overlapped a finished write is retried, and an
+  older read never replaces a newer one. When a write finishes, commit its effect
+  to the server rows and drop its overlay with no `await` in between.
+- New tasks get their final ID from the app (`tasks.new_task` previews exactly what
+  `create_task` stores) and are saved together with their position in one write.
+  The create/edit modals reject due strings that `dates.parse_due_string` can't parse.
   On day navigation, clear the prior day's rows and show an unloaded state until
   the selected day's read succeeds.
 - All location details belong in local config, never source/tests/PR text. Do not
@@ -141,7 +153,8 @@ AWS CLI 40s (whole process), Linear 10s.
 ## UI Conventions
 
 - Row keys encode metadata: `todoist:{id}:{url}`, `linear:{id}:{team_id}:{url}`, etc.
-- Cursor position preserved across refreshes via key matching
+- Cursor position preserved across refreshes via key matching; if the selected task
+  disappears, the cursor keeps its row index (the task below slides under it)
 - Relative line numbers (vim-style) updated on cursor movement
 - Toast notifications for user feedback on actions
 - **Optimistic updates required**: Any feature that mutates state on a remote server (API call) must include an optimistic UI update — immediately reflect the change in the UI before the API response, then roll back on failure. This applies to all panels (Todoist, GitHub, Linear). Use the existing undo stack (`undo.py`) to support reversal. See existing patterns: task completion, PR merge, issue state changes, reordering.

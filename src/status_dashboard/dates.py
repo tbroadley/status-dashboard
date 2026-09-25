@@ -256,6 +256,10 @@ def parse_due_string(text: str, now: datetime | None = None) -> ParsedDue:
     if remainder in {"next working day", "next workday"}:
         return ParsedDue(due=_combine(next_working_day(now.date()), at))
 
+    if remainder == "next week":
+        day = _next_weekday(now.date(), WEEKDAYS["monday"], allow_same_day=False)
+        return ParsedDue(due=_combine(day, at))
+
     if match := re.fullmatch(r"in (\d+) (day|days|week|weeks)", remainder):
         days = int(match.group(1)) * (7 if match.group(2).startswith("week") else 1)
         return ParsedDue(due=_combine(now.date() + timedelta(days=days), at))
@@ -278,6 +282,17 @@ def parse_due_string(text: str, now: datetime | None = None) -> ParsedDue:
         return ParsedDue(due=_combine(parsed_date, at))
 
     return ParsedDue(due=None)
+
+
+def is_valid_due_string(text: str, *, allow_no_date: bool = False) -> bool:
+    """Whether `text` parses to a due date (or explicitly clears it, if allowed).
+
+    `parse_due_string` returns no date for input it doesn't understand, which
+    would silently store a dateless task that no day view shows.
+    """
+    if re.sub(r"\s+", " ", text.strip().lower()) in _NO_DATE:
+        return allow_no_date
+    return parse_due_string(text).due is not None
 
 
 def _parse_calendar_date(text: str, now: datetime) -> date | None:

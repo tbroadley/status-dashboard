@@ -9,7 +9,25 @@ from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Select, TextArea
 
+from status_dashboard import dates
 from status_dashboard.db import goals as goals_db
+
+
+def _due_input_is_valid(
+    screen: ModalScreen[dict[str, str] | None],
+    due_input: Input,
+    due_string: str,
+    *,
+    allow_no_date: bool,
+) -> bool:
+    if dates.is_valid_due_string(due_string, allow_no_date=allow_no_date):
+        return True
+    screen.notify(
+        f"Couldn't understand due date '{due_string}'",
+        severity="error",
+    )
+    _ = due_input.focus()
+    return False
 
 
 class ConfirmationModal(ModalScreen[bool]):
@@ -174,7 +192,7 @@ class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
             yield Label("Due:")
             yield Input(
                 value="today",
-                placeholder="today, tomorrow, next week, 2024-01-15, etc.",
+                placeholder="today, tomorrow 3pm, friday, next week, 2024-01-15",
                 id="due-input",
             )
             with Vertical(id="buttons"):
@@ -200,17 +218,18 @@ class CreateTodoistTaskModal(ModalScreen[dict[str, str] | None]):
             due_input = self.query_one("#due-input", Input)
 
             task_content = task_input.value.strip()
-            if task_content:
+            due_string = due_input.value.strip() or "today"
+            if not task_content:
+                _ = task_input.focus()
+            elif _due_input_is_valid(self, due_input, due_string, allow_no_date=False):
                 result: dict[str, str] = {
                     "content": task_content,
-                    "due_string": due_input.value.strip() or "today",
+                    "due_string": due_string,
                 }
                 description = description_input.text.strip()
                 if description:
                     result["description"] = description
                 _ = self.dismiss(result)
-            else:
-                _ = task_input.focus()
         else:
             _ = self.dismiss(None)
 
@@ -456,7 +475,7 @@ class EditTodoistTaskModal(ModalScreen[dict[str, str] | None]):
             yield Label("Due:")
             yield Input(
                 value=self.initial_due_string or "",
-                placeholder="today, tomorrow, next week, 2024-01-15, etc.",
+                placeholder="today, tomorrow 3pm, friday, next week, 2024-01-15",
                 id="due-input",
             )
             with Vertical(id="buttons"):
@@ -492,6 +511,10 @@ class EditTodoistTaskModal(ModalScreen[dict[str, str] | None]):
 
             due_string = due_input.value.strip()
             if due_string != (self.initial_due_string or ""):
+                if not _due_input_is_valid(
+                    self, due_input, due_string, allow_no_date=True
+                ):
+                    return
                 result["due_string"] = due_string
 
             _ = self.dismiss(result)

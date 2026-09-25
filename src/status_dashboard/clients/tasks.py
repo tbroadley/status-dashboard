@@ -89,18 +89,27 @@ def get_tasks_for_date(
 ) -> list[Task]:
     del api_token
     rows = TaskStore().read().rows
-    target = target_date.isoformat()
-    is_today = target_date == dt.date.today()
-    result: list[Task] = []
-    for row in rows:
-        if _is_true(_cell(row, COL_DONE)):
-            continue
-        due = _cell(row, COL_DUE)[:10]
-        if not due or (due > target if is_today else due != target):
-            continue
-        result.append(_row_to_task(row))
+    result = [
+        _row_to_task(row)
+        for row in rows
+        if not _is_true(_cell(row, COL_DONE))
+        and is_due_on(_cell(row, COL_DUE)[:10] or None, target_date)
+    ]
     result.sort(key=lambda task: task.day_order)
     return result
+
+
+def is_due_on(due_date: str | None, target_date: dt.date) -> bool:
+    """Whether a task due on `due_date` belongs in the view for `target_date`.
+
+    The view for today also shows overdue tasks.
+    """
+    if not due_date:
+        return False
+    target = target_date.isoformat()
+    if target_date == dt.date.today():
+        return due_date <= target
+    return due_date == target
 
 
 def _edit_task(task_id: str, edit: Callable[[list[str]], None]) -> bool:
@@ -157,28 +166,69 @@ def defer_task(task_id: str, api_token: str | None = None) -> bool:
     return _update_cells(task_id, {COL_DUE: _iso(dates.next_working_day())})
 
 
-def create_task(
+def _new_row(
+    task_id: str,
     content: str,
-    due_string: str = "today",
-    description: str = "",
-    api_token: str | None = None,
-) -> str | None:
-    del api_token
-    parsed = dates.parse_due_string(due_string)
-    task_id = str(uuid.uuid4())
-    row = [
+    due_string: str,
+    description: str,
+    order: int,
+    now: dt.datetime | None,
+) -> list[str]:
+    parsed = dates.parse_due_string(due_string, now)
+    return [
         task_id,
         content,
         "",
         description,
         _iso(parsed.due),
         parsed.recurrence or "",
-        "0",
+        str(order),
         "FALSE",
         "",
     ]
 
+
+def new_task(
+    task_id: str,
+    content: str,
+    due_string: str = "today",
+    description: str = "",
+    *,
+    day_order: int = 0,
+    now: dt.datetime | None = None,
+) -> Task:
+    """The task `create_task` stores for the same arguments, without storing it."""
+    return _row_to_task(
+        _new_row(task_id, content, due_string, description, day_order, now)
+    )
+
+
+def create_task(
+    content: str,
+    due_string: str = "today",
+    description: str = "",
+    api_token: str | None = None,
+    *,
+    task_id: str | None = None,
+    day_orders: dict[str, int] | None = None,
+    now: dt.datetime | None = None,
+) -> str | None:
+    """Store a new task, optionally reordering the day in the same write.
+
+    Callers that display the task before it is saved pass their own `task_id`
+    (and the `now` used for `new_task`) so the stored row matches the preview.
+    """
+    del api_token
+    task_id = task_id or str(uuid.uuid4())
+    orders = day_orders or {}
+    row = _new_row(
+        task_id, content, due_string, description, orders.get(task_id, 0), now
+    )
+
     def edit(rows: Rows) -> bool:
+        for existing in rows:
+            if existing[COL_ID] in orders:
+                existing[COL_ORDER] = str(orders[existing[COL_ID]])
         if not any(existing[COL_ID] == task_id for existing in rows):
             rows.append(row.copy())
         return True
@@ -227,9 +277,20 @@ def get_task(task_id: str, api_token: str | None = None) -> JsonDict | None:
 def set_due_date(
     task_id: str, due_date: str | None, api_token: str | None = None
 ) -> bool:
+    """Set the due date from a stored ISO value (as `get_task` returns) or a due string."""
     del api_token
+    if due_date and _is_iso(due_date):
+        return _update_cells(task_id, {COL_DUE: due_date})
     parsed = dates.parse_due_string(due_date) if due_date else dates.ParsedDue(due=None)
     return _update_cells(task_id, {COL_DUE: _iso(parsed.due)})
+
+
+def _is_iso(value: str) -> bool:
+    try:
+        _ = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
 
 
 def reschedule_to_today(

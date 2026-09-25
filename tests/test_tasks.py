@@ -94,6 +94,42 @@ class TestTasks(unittest.TestCase):
         self.assertFalse(tasks.delete_task(task_id))
         self.assertIsNone(tasks.get_task(task_id))
 
+    def test_create_with_id_and_orders_matches_preview(self):
+        existing = tasks.create_task("Existing")
+        assert existing is not None
+        now = dt.datetime.combine(self.today, dt.time(9))
+        preview = tasks.new_task(
+            "new-id", "New", "today 5pm", "notes", day_order=0, now=now
+        )
+        created = tasks.create_task(
+            "New",
+            "today 5pm",
+            "notes",
+            task_id="new-id",
+            day_orders={"new-id": 0, existing: 1},
+            now=now,
+        )
+        self.assertEqual(created, "new-id")
+        stored = tasks.get_today_tasks()
+        self.assertEqual([t.id for t in stored], ["new-id", existing])
+        self.assertEqual(stored[0], preview)
+        # A retried create (e.g. after a lost response) doesn't duplicate the row.
+        self.assertEqual(tasks.create_task("New", task_id="new-id"), "new-id")
+        self.assertEqual(len(tasks.get_today_tasks()), 2)
+
+    def test_set_due_date_restores_stored_timestamp(self):
+        task_id = tasks.create_task("Timed", "today 3pm")
+        assert task_id is not None
+        payload = tasks.get_task(task_id)
+        assert payload is not None
+        original = cast(dict[str, object], payload["due"])["date"]
+        assert isinstance(original, str)
+        self.assertTrue(tasks.defer_task(task_id))
+        self.assertTrue(tasks.set_due_date(task_id, original))
+        restored = tasks.get_task(task_id)
+        assert restored is not None
+        self.assertEqual(cast(dict[str, object], restored["due"])["date"], original)
+
     def test_recurring_completion_advances_without_done(self):
         task_id = tasks.create_task("Recurring", "every day at 10am")
         assert task_id is not None

@@ -117,6 +117,9 @@ AWS CLI 40s (whole process), Linear 10s.
 - No Google API calls. The AWS CLI's credential chain owns authentication.
 - Shared format: `{"version":1,"rows":[...]}` with nine string cells per row:
   `id, content, project, description, due, recurrence, order, done, completed_at`.
+- `order` is one ranking across all rows, not a position within a day. Reordering a
+  day permutes the listed tasks among the ranks they already hold (`_arrange`), so
+  tasks not shown that day, e.g. completed recurring tasks, keep their relative order.
 - Validate on every read; missing/corrupt documents fail closed. Never auto-initialize
   or substitute an empty list. `task-store` provides explicit create-only initialization/import.
 - Each edit reads data+ETag, writes a unique pre-edit recovery object under

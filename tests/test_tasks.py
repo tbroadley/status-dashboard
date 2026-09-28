@@ -43,7 +43,8 @@ class TestTasks(unittest.TestCase):
         initial = tasks.get_today_tasks()
         overdue = next(task for task in initial if task.content == "Overdue")
         done = next(task for task in initial if task.content == "Done")
-        self.assertTrue(tasks.update_day_orders({overdue.id: -1}))
+        today = next(task for task in initial if task.content == "Today")
+        self.assertTrue(tasks.update_day_orders({overdue.id: 0, today.id: 1}))
         self.assertTrue(tasks.complete_task(done.id))
         self.assertEqual(
             [t.content for t in tasks.get_today_tasks()], ["Overdue", "Today"]
@@ -141,6 +142,28 @@ class TestTasks(unittest.TestCase):
         self.assertEqual(after[7:], ["FALSE", ""])
         self.assertTrue(tasks.reschedule_to_today(task_id, True, "every day at 10am"))
         self.assertEqual(tasks.get_today_tasks()[0].due_time, "10:00")
+
+    def test_recurring_tasks_keep_their_order_the_next_day(self):
+        # Stored in the reverse of the order they are arranged in.
+        c, b, a = (tasks.create_task(name, "every day") for name in "CBA")
+        assert a and b and c
+        for task_id in (a, b, c):
+            self.assertTrue(tasks.reschedule_to_today(task_id, True, "every day"))
+        self.assertTrue(tasks.update_day_orders({a: 0, b: 1, c: 2}))
+        self.assertTrue(tasks.complete_task(a))
+        # Rearranging what is left of today doesn't move the completed task.
+        self.assertTrue(tasks.update_day_orders({c: 0, b: 1}))
+        self.assertTrue(tasks.complete_task(c))
+        self.assertTrue(tasks.complete_task(b))
+        tomorrow = tasks.get_tasks_for_date(self.today + dt.timedelta(days=1))
+        self.assertEqual([t.content for t in tomorrow], ["A", "C", "B"])
+
+    def test_arrange_keeps_unlisted_rows_in_place(self):
+        rows = [row(name, order=rank) for rank, name in enumerate("abcde")]
+        ranks = tasks._arrange(rows, ["new-1", "d", "b", "new-2"])  # pyright: ignore[reportPrivateUsage]
+        ranking = sorted(ranks, key=lambda task_id: ranks[task_id])
+        self.assertEqual(ranking, ["a", "new-1", "d", "c", "b", "new-2", "e"])
+        self.assertEqual([r[6] for r in rows], ["0", "4", "3", "2", "6"])
 
     def test_mutation_reresolves_id_after_concurrent_delete(self):
         first = tasks.create_task("First")

@@ -1,4 +1,5 @@
 import datetime as dt
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypeAlias
@@ -62,15 +63,19 @@ def _iso(due: dt.datetime | dt.date | None) -> str:
     return due.isoformat()
 
 
+def _order(row: list[str]) -> int:
+    order = _cell(row, COL_ORDER)
+    return int(order) if order.lstrip("-").isdigit() else 0
+
+
 def _row_to_task(row: list[str]) -> Task:
     due = _cell(row, COL_DUE)
     recurrence = _cell(row, COL_RECURRENCE)
-    order = _cell(row, COL_ORDER)
     return Task(
         id=_cell(row, COL_ID),
         content=_cell(row, COL_CONTENT),
         is_completed=_is_true(_cell(row, COL_DONE)),
-        day_order=int(order) if order.lstrip("-").isdigit() else 0,
+        day_order=_order(row),
         due_date=due[:10] or None,
         due_time=_extract_local_time(due),
         description=_cell(row, COL_DESCRIPTION),
@@ -221,16 +226,14 @@ def create_task(
     del api_token
     task_id = task_id or str(uuid.uuid4())
     orders = day_orders or {}
-    row = _new_row(
-        task_id, content, due_string, description, orders.get(task_id, 0), now
-    )
+    row = _new_row(task_id, content, due_string, description, 0, now)
 
     def edit(rows: Rows) -> bool:
-        for existing in rows:
-            if existing[COL_ID] in orders:
-                existing[COL_ORDER] = str(orders[existing[COL_ID]])
+        ranks = _arrange(rows, _in_order(orders)) if orders else {}
         if not any(existing[COL_ID] == task_id for existing in rows):
-            rows.append(row.copy())
+            new_row = row.copy()
+            new_row[COL_ORDER] = str(ranks.get(task_id, 0))
+            rows.append(new_row)
         return True
 
     return task_id if TaskStore().update(edit) else None
@@ -313,19 +316,60 @@ def reschedule_to_today(
 def update_day_orders(
     ids_to_orders: dict[str, int], api_token: str | None = None
 ) -> bool:
+    """Arrange the given tasks in ascending order of their values (see `_arrange`)."""
     del api_token
     if not ids_to_orders:
         return True
 
     def edit(rows: Rows) -> bool:
-        found = False
-        for row in rows:
-            if row[COL_ID] in ids_to_orders:
-                row[COL_ORDER] = str(ids_to_orders[row[COL_ID]])
-                found = True
-        return found
+        if not any(row[COL_ID] in ids_to_orders for row in rows):
+            return False
+        _ = _arrange(rows, _in_order(ids_to_orders))
+        return True
 
     return TaskStore().update(edit)
+
+
+def _in_order(ids_to_orders: dict[str, int]) -> list[str]:
+    return sorted(ids_to_orders, key=lambda task_id: ids_to_orders[task_id])
+
+
+def _arrange(rows: Rows, sequence: list[str]) -> dict[str, int]:
+    """Put the listed tasks in `sequence` order and renumber every row.
+
+    The order column is one ranking across all tasks, not a position within a
+    day: the listed tasks trade the ranks they already hold, and every other
+    task keeps its place. So tasks hidden from the day being arranged, such as
+    recurring tasks already completed until tomorrow, stay in the order they
+    had among themselves. A listed ID with no row yet (a task being created)
+    is ranked just before the listed task that follows it. Returns the new
+    rank of every ID, including those without a row.
+    """
+    present = {row[COL_ID] for row in rows}
+    listed = set(sequence)
+    queue = deque(dict.fromkeys(sequence))
+    existing_left = sum(task_id in present for task_id in queue)
+    ranking: list[str] = []
+    for row in sorted(rows, key=_order):  # stable: ties keep document order
+        task_id = row[COL_ID]
+        if task_id not in listed:
+            ranking.append(task_id)
+            continue
+        # This rank goes to the next listed task, after any new ones before it.
+        while queue:
+            next_id = queue.popleft()
+            ranking.append(next_id)
+            if next_id in present:
+                existing_left -= 1
+                break
+        if existing_left == 0:
+            ranking.extend(queue)  # new tasks after the last listed one
+            queue.clear()
+    ranking.extend(queue)
+    ranks = {task_id: rank for rank, task_id in enumerate(ranking)}
+    for row in rows:
+        row[COL_ORDER] = str(ranks[row[COL_ID]])
+    return ranks
 
 
 def get_projects(api_token: str | None = None) -> list[Project]:

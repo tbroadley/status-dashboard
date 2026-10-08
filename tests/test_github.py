@@ -23,6 +23,9 @@ def _make_pr(
     )
 
 
+_Item = tuple[Mapping[str, object], str | None]
+
+
 def _make_notification(
     reason: str, subject_type: str = "PullRequest", repository: str = "acme/repo"
 ) -> dict[str, object]:
@@ -177,9 +180,12 @@ class GetNotificationsTests(unittest.TestCase):
     def test_includes_review_requested_and_comment_notifications(self) -> None:
         for reason in ("review_requested", "comment"):
             with self.subTest(reason=reason):
-                with patch.object(
-                    github, "_run_gh_api", return_value=[_make_notification(reason)]
-                ) as run_api:
+                with (
+                    patch.object(
+                        github, "_run_gh_api", return_value=[_make_notification(reason)]
+                    ) as run_api,
+                    patch.object(github, "_run_gh_graphql", return_value=None),
+                ):
                     notifications = github.get_notifications(["acme"])
 
                 run_api.assert_called_once_with("notifications?all=false&per_page=50")
@@ -207,12 +213,119 @@ class GetNotificationsTests(unittest.TestCase):
             with self.subTest(
                 reason=reason, subject_type=subject_type, repository=repository
             ):
-                with patch.object(
-                    github,
-                    "_run_gh_api",
-                    return_value=[_make_notification(reason, subject_type, repository)],
+                with (
+                    patch.object(
+                        github,
+                        "_run_gh_api",
+                        return_value=[
+                            _make_notification(reason, subject_type, repository)
+                        ],
+                    ),
+                    patch.object(github, "_run_gh_graphql") as run_graphql,
                 ):
                     self.assertEqual(github.get_notifications(["acme"]), [])
+                run_graphql.assert_not_called()
+
+    def test_hides_settled_notifications(self) -> None:
+        me, human, bot = (
+            {"viewerDidAuthor": True, "author": {"__typename": "User", "login": "me"}},
+            {
+                "viewerDidAuthor": False,
+                "author": {"__typename": "User", "login": "alice"},
+            },
+            {
+                "viewerDidAuthor": False,
+                "author": {"__typename": "Bot", "login": "greptile-apps"},
+            },
+        )
+        early, late = "2026-01-01T10:00:00Z", "2026-01-01T11:00:00Z"
+        cases: list[tuple[str, str, str, list[_Item], list[_Item], bool]] = [
+            ("open, no activity of mine", "review_requested", "OPEN", [], [], True),
+            ("merged review request", "review_requested", "MERGED", [], [], False),
+            ("closed review request", "review_requested", "CLOSED", [], [], False),
+            ("mention on merged PR", "mention", "MERGED", [], [], True),
+            (
+                "my review after human comment",
+                "review_requested",
+                "OPEN",
+                [(human, early)],
+                [(me, late)],
+                False,
+            ),
+            (
+                "human comment after my review",
+                "review_requested",
+                "OPEN",
+                [(human, late)],
+                [(me, early)],
+                True,
+            ),
+            (
+                "my reply after mention",
+                "mention",
+                "OPEN",
+                [(human, early), (me, late)],
+                [],
+                False,
+            ),
+            (
+                "bot comment after my review",
+                "review_requested",
+                "OPEN",
+                [(bot, late)],
+                [(me, early)],
+                False,
+            ),
+            (
+                "my pending review",
+                "review_requested",
+                "OPEN",
+                [(human, early)],
+                [(me, None)],
+                True,
+            ),
+        ]
+        for name, reason, state, comments, reviews, visible in cases:
+            with self.subTest(name):
+                activity = {
+                    "data": {
+                        "pr0": {
+                            "pullRequest": {
+                                "state": state,
+                                "comments": {
+                                    "nodes": [
+                                        {**author, "createdAt": at}
+                                        for author, at in comments
+                                    ]
+                                },
+                                "reviews": {
+                                    "nodes": [
+                                        {**author, "submittedAt": at}
+                                        for author, at in reviews
+                                    ]
+                                },
+                            }
+                        }
+                    }
+                }
+                with (
+                    patch.object(
+                        github,
+                        "_run_gh_api",
+                        return_value=[
+                            _make_notification(reason, repository="Acme/Repo")
+                        ],
+                    ),
+                    patch.object(
+                        github, "_run_gh_graphql", return_value=activity
+                    ) as run_graphql,
+                ):
+                    notifications = github.get_notifications(["Acme"])
+
+                query = cast(str, run_graphql.call_args.args[0])
+                self.assertIn('pr0: repository(owner: "Acme", name: "Repo")', query)
+                self.assertIn("pullRequest(number: 1)", query)
+                self.assertEqual(len(notifications), 1 if visible else 0)
 
 
 if __name__ == "__main__":

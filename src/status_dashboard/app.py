@@ -823,9 +823,7 @@ class StatusDashboard(App[None]):
 
         _ = table.clear()
 
-        visible_prs = [
-            pr for pr in self._my_prs if (pr.repository, pr.number) not in HIDDEN_PRS
-        ]
+        visible_prs = self._visible_my_prs()
 
         if not visible_prs:
             _ = table.add_row(
@@ -879,7 +877,37 @@ class StatusDashboard(App[None]):
             if selected_key:
                 _ = self._restore_cursor_by_key(table, selected_key)
         table.refresh_line_numbers()
-        self._recompute_layout()
+        self._render_notifications_table()
+
+    def _visible_my_prs(self) -> list[github.PullRequest]:
+        return [
+            pr for pr in self._my_prs if (pr.repository, pr.number) not in HIDDEN_PRS
+        ]
+
+    def _visible_review_requests(self) -> list[github.ReviewRequest]:
+        def _is_visible(pr: github.ReviewRequest) -> bool:
+            if (pr.repository, pr.number) in HIDDEN_REVIEW_REQUESTS:
+                return False
+            # Hide if all requested teams are blocked (and there are teams)
+            if pr.requested_teams and all(
+                team in BLOCKED_REVIEW_TEAMS for team in pr.requested_teams
+            ):
+                return False
+            return True
+
+        return [pr for pr in self._review_requests if _is_visible(pr)]
+
+    def _visible_notifications(self) -> list[github.Notification]:
+        """Notifications for PRs not already shown in My PRs or Review Requests."""
+        shown = {
+            (pr.repository.lower(), pr.number)
+            for pr in [*self._visible_my_prs(), *self._visible_review_requests()]
+        }
+        return [
+            n
+            for n in self._gh_notifications
+            if (n.repository.lower(), n.pr_number) not in shown
+        ]
 
     @work(exclusive=False)
     async def _refresh_review_requests(self) -> None:
@@ -893,17 +921,7 @@ class StatusDashboard(App[None]):
 
         _ = table.clear()
 
-        def _is_visible(pr: github.ReviewRequest) -> bool:
-            if (pr.repository, pr.number) in HIDDEN_REVIEW_REQUESTS:
-                return False
-            # Hide if all requested teams are blocked (and there are teams)
-            if pr.requested_teams and all(
-                team in BLOCKED_REVIEW_TEAMS for team in pr.requested_teams
-            ):
-                return False
-            return True
-
-        visible_prs = [pr for pr in self._review_requests if _is_visible(pr)]
+        visible_prs = self._visible_review_requests()
 
         if not visible_prs:
             _ = table.add_row(
@@ -940,7 +958,7 @@ class StatusDashboard(App[None]):
             if selected_key:
                 _ = self._restore_cursor_by_key(table, selected_key)
         table.refresh_line_numbers()
-        self._recompute_layout()
+        self._render_notifications_table()
 
     @work(exclusive=False)
     async def _refresh_gh_notifications(self) -> None:
@@ -954,12 +972,13 @@ class StatusDashboard(App[None]):
 
         _ = table.clear()
 
-        if not self._gh_notifications:
+        visible_notifications = self._visible_notifications()
+        if not visible_notifications:
             _ = table.add_row(
                 "", "", Text("No notifications", style="dim italic"), "", "", ""
             )
         else:
-            for notif in self._gh_notifications:
+            for notif in visible_notifications:
                 repo = _short_repo(notif.repository)
                 age = github._relative_time(notif.updated_at)  # pyright: ignore[reportPrivateUsage]
                 pr_display = f"#{notif.pr_number}" if notif.pr_number else ""
@@ -2154,12 +2173,29 @@ class StatusDashboard(App[None]):
             def handle_remove_reviewer_confirmation(confirmed: bool) -> None:
                 if confirmed:
                     # Optimistic update: remove review request from list immediately
+                    # and drop the PR's notifications, which would otherwise
+                    # surface once the review request no longer covers them.
+                    removed_notifications = [
+                        n
+                        for n in self._gh_notifications
+                        if n.repository.lower() == repo.lower()
+                        and n.pr_number == pr_number
+                    ]
+                    self._gh_notifications = [
+                        n
+                        for n in self._gh_notifications
+                        if n not in removed_notifications
+                    ]
                     if review_to_remove is not None and review_index >= 0:
                         _ = self._review_requests.pop(review_index)
-                        self._render_review_requests_table()
+                    self._render_review_requests_table()
                     self._last_action_undoable = False
                     _ = self._do_remove_self_as_reviewer(
-                        repo, pr_number, review_to_remove, review_index
+                        repo,
+                        pr_number,
+                        review_to_remove,
+                        review_index,
+                        removed_notifications,
                     )
 
             self.push_screen(  # pyright: ignore[reportCallIssue]
@@ -2178,17 +2214,21 @@ class StatusDashboard(App[None]):
         pr_number: int,
         removed_review: github.ReviewRequest | None,
         removed_index: int,
+        removed_notifications: list[github.Notification],
     ) -> None:
         success = await asyncio.to_thread(
             github.remove_self_as_reviewer, repo, pr_number
         )
         if success:
             self.notify(f"Removed from PR #{pr_number}")
+            for notif in removed_notifications:
+                _ = await asyncio.to_thread(github.mark_notification_read, notif.id)
         else:
             # Rollback: restore the review request to its original position
             if removed_review is not None and removed_index >= 0:
                 self._review_requests.insert(removed_index, removed_review)
-                self._render_review_requests_table()
+            self._gh_notifications.extend(removed_notifications)
+            self._render_review_requests_table()
             self.notify("Failed to remove self as reviewer", severity="error")
 
     def action_merge_pr(self) -> None:

@@ -116,4 +116,11 @@ lifecycle policy; they are not immutable against an authorized deleter.
 ### Review Requests
 | Key | Action |
 |-----|--------|
-| `x` | Remove yourself as reviewer |
+| `x` | Remove yourself as reviewer (also marks the PR's notifications read) |
+
+### Notifications
+
+Each PR appears in at most one table. A notification is hidden while its PR is
+shown in My PRs or Review Requests (PRs hidden there still show notifications).
+It is also hidden once settled: your latest review or comment is newer than any
+human activity on the PR, or it is a review request on a merged or closed PR.

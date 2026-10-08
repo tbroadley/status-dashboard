@@ -64,6 +64,7 @@ class Notification:
     url: str
     updated_at: datetime
     pr_number: int | None = None
+    issue_number: int | None = None
 
 
 def _run_gh_graphql(query: str) -> _JsonDict | None:
@@ -726,10 +727,12 @@ def _is_settled(notification: Notification, activity: _PRActivity | None) -> boo
 
 
 def get_notifications(orgs: list[str] | None = None) -> list[Notification]:
-    """Get unread GitHub notifications for pull requests that need attention.
+    """Get unread GitHub notifications for pull requests and issues.
 
-    Filters to only PR-related notifications, optionally by organization, and
-    drops notifications that are settled (see `_is_settled`).
+    Filters to PR and issue notifications, optionally by organization, and
+    drops PR notifications that are settled (see `_is_settled`). Notifications
+    on my own PRs are skipped because My PRs already shows them; notifications
+    on my own issues are kept, since nothing else surfaces them.
     """
     owners = orgs or _get_orgs()
     result = _run_gh_api("notifications?all=false&per_page=50")
@@ -739,11 +742,11 @@ def get_notifications(orgs: list[str] | None = None) -> list[Notification]:
 
     notifications: list[Notification] = []
     for item in result:
-        if _get_str(item, "reason") == "author":
-            continue
-
         subject = _get_dict(item, "subject")
-        if _get_str(subject, "type") != "PullRequest":
+        subject_type = _get_str(subject, "type")
+        if subject_type not in ("PullRequest", "Issue"):
+            continue
+        if subject_type == "PullRequest" and _get_str(item, "reason") == "author":
             continue
 
         repo_dict = _get_dict(item, "repository")
@@ -755,12 +758,19 @@ def get_notifications(orgs: list[str] | None = None) -> list[Notification]:
 
         subject_url = _get_str(subject, "url")
         pr_number: int | None = None
+        issue_number: int | None = None
         html_url = ""
         if subject_url:
             parts = subject_url.split("/")
-            if len(parts) >= 2 and parts[-2] == "pulls":
-                pr_number = int(parts[-1])
-                html_url = f"https://github.com/{repo_full_name}/pull/{pr_number}"
+            if len(parts) >= 2 and parts[-1].isdigit():
+                if parts[-2] == "pulls":
+                    pr_number = int(parts[-1])
+                    html_url = f"https://github.com/{repo_full_name}/pull/{pr_number}"
+                elif parts[-2] == "issues":
+                    issue_number = int(parts[-1])
+                    html_url = (
+                        f"https://github.com/{repo_full_name}/issues/{issue_number}"
+                    )
 
         notifications.append(
             Notification(
@@ -771,6 +781,7 @@ def get_notifications(orgs: list[str] | None = None) -> list[Notification]:
                 url=html_url,
                 updated_at=_parse_datetime(_get_str(item, "updated_at")),
                 pr_number=pr_number,
+                issue_number=issue_number,
             )
         )
 

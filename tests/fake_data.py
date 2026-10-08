@@ -115,7 +115,7 @@ def fake_notifications() -> list[github.Notification]:
             repository="acme/infra",
             url="https://github.com/acme/infra/issues/42",
             updated_at=now - timedelta(hours=2),
-            pr_number=None,
+            issue_number=42,
         ),
         github.Notification(
             id="n3",

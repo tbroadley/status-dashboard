@@ -624,10 +624,112 @@ def _run_gh_api(
         return None
 
 
-def get_notifications(orgs: list[str] | None = None) -> list[Notification]:
-    """Get unread GitHub notifications for pull requests.
+@dataclass
+class _PRActivity:
+    state: str
+    my_last_activity: datetime | None
+    others_last_activity: datetime | None
 
-    Filters to only PR-related notifications and optionally by organization.
+
+_PR_ACTIVITY_FIELDS = """
+      state
+      comments(last: 30) {
+        nodes { viewerDidAuthor createdAt author { __typename login } }
+      }
+      reviews(last: 30) {
+        nodes { viewerDidAuthor submittedAt author { __typename login } }
+      }
+"""
+
+
+def _is_bot(author: _JsonDict) -> bool:
+    login = _get_str(author, "login").lower()
+    return (
+        _get_str(author, "__typename") == "Bot"
+        or login.endswith("[bot]")
+        or login in BOT_REVIEWERS
+    )
+
+
+def _get_pr_activity(
+    prs: list[tuple[str, int]],
+) -> dict[tuple[str, int], _PRActivity]:
+    """Fetch state and latest human activity for PRs in one GraphQL request.
+
+    Keys are (lowercased repo, number). Returns an empty dict on failure.
+    """
+    if not prs:
+        return {}
+
+    parts: list[str] = []
+    for i, (repo, number) in enumerate(prs):
+        owner, _, name = repo.partition("/")
+        parts.append(
+            f"pr{i}: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{"
+            + f" pullRequest(number: {number}) {{ {_PR_ACTIVITY_FIELDS} }} }}"
+        )
+    result = _run_gh_graphql("query { " + "\n".join(parts) + " }")
+    if not result:
+        return {}
+    data = _get_dict(result, "data")
+
+    activity: dict[tuple[str, int], _PRActivity] = {}
+    for i, (repo, number) in enumerate(prs):
+        pr = _get_dict(_get_dict(data, f"pr{i}"), "pullRequest")
+        if not pr:
+            continue
+
+        mine: list[datetime] = []
+        others: list[datetime] = []
+        items = [
+            (node, _get_str(node, "createdAt"))
+            for node in _get_list(_get_dict(pr, "comments"), "nodes")
+        ] + [
+            (node, _get_str(node, "submittedAt"))
+            for node in _get_list(_get_dict(pr, "reviews"), "nodes")
+        ]
+        for node, timestamp in items:
+            if not node or not timestamp:  # pending reviews have no submittedAt
+                continue
+            if _get_bool(node, "viewerDidAuthor"):
+                mine.append(_parse_datetime(timestamp))
+            elif not _is_bot(_get_dict(node, "author")):
+                others.append(_parse_datetime(timestamp))
+
+        activity[(repo.lower(), number)] = _PRActivity(
+            state=_get_str(pr, "state"),
+            my_last_activity=max(mine, default=None),
+            others_last_activity=max(others, default=None),
+        )
+    return activity
+
+
+def _is_settled(notification: Notification, activity: _PRActivity | None) -> bool:
+    """Whether a notification no longer needs attention.
+
+    True for review requests on merged/closed PRs, and for PRs where my latest
+    review or comment is newer than any human activity by others.
+    """
+    if activity is None:
+        return False
+    if notification.reason == "review_requested" and activity.state in (
+        "MERGED",
+        "CLOSED",
+    ):
+        return True
+    if activity.my_last_activity is None:
+        return False
+    return (
+        activity.others_last_activity is None
+        or activity.others_last_activity <= activity.my_last_activity
+    )
+
+
+def get_notifications(orgs: list[str] | None = None) -> list[Notification]:
+    """Get unread GitHub notifications for pull requests that need attention.
+
+    Filters to only PR-related notifications, optionally by organization, and
+    drops notifications that are settled (see `_is_settled`).
     """
     owners = orgs or _get_orgs()
     result = _run_gh_api("notifications?all=false&per_page=50")
@@ -672,7 +774,15 @@ def get_notifications(orgs: list[str] | None = None) -> list[Notification]:
             )
         )
 
-    return notifications
+    activity = _get_pr_activity(
+        [(n.repository, n.pr_number) for n in notifications if n.pr_number]
+    )
+    return [
+        n
+        for n in notifications
+        if not n.pr_number
+        or not _is_settled(n, activity.get((n.repository.lower(), n.pr_number)))
+    ]
 
 
 def mark_notification_read(thread_id: str) -> bool:

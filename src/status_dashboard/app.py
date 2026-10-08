@@ -898,7 +898,7 @@ class StatusDashboard(App[None]):
         return [pr for pr in self._review_requests if _is_visible(pr)]
 
     def _visible_notifications(self) -> list[github.Notification]:
-        """Notifications for PRs not already shown in My PRs or Review Requests."""
+        """Notifications, minus PRs already shown in My PRs or Review Requests."""
         shown = {
             (pr.repository.lower(), pr.number)
             for pr in [*self._visible_my_prs(), *self._visible_review_requests()]
@@ -906,7 +906,7 @@ class StatusDashboard(App[None]):
         return [
             n
             for n in self._gh_notifications
-            if (n.repository.lower(), n.pr_number) not in shown
+            if n.pr_number is None or (n.repository.lower(), n.pr_number) not in shown
         ]
 
     @work(exclusive=False)
@@ -981,14 +981,18 @@ class StatusDashboard(App[None]):
             for notif in visible_notifications:
                 repo = _short_repo(notif.repository)
                 age = github._relative_time(notif.updated_at)  # pyright: ignore[reportPrivateUsage]
-                pr_display = f"#{notif.pr_number}" if notif.pr_number else ""
+                number = notif.pr_number or notif.issue_number
+                pr_display = f"#{number}" if number else ""
+                reason = (
+                    f"{notif.reason} (issue)" if notif.issue_number else notif.reason
+                )
                 title = notif.title[:40] + "…" if len(notif.title) > 40 else notif.title
                 _ = table.add_row(
                     "",
                     pr_display,
                     title,
                     repo,
-                    notif.reason,
+                    reason,
                     age,
                     key=f"notif:{notif.id}:{notif.repository}:{notif.pr_number or ''}:{notif.url}",
                 )

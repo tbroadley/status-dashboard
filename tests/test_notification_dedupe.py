@@ -139,3 +139,33 @@ class NotificationDedupeTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     _ = unittest.main()
+
+
+class IssueNotificationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_renders_issue_notifications(self) -> None:
+        with _patched():
+            app = StatusDashboard()
+            async with app.run_test(size=(120, 40)) as pilot:
+                app._gh_notifications = [  # pyright: ignore[reportPrivateUsage]
+                    github.Notification(
+                        id="issue",
+                        reason="mention",
+                        title="Question about scope",
+                        repository="acme/repo",
+                        url="https://github.com/acme/repo/issues/7",
+                        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                        issue_number=7,
+                    )
+                ]
+                app._render_notifications_table()  # pyright: ignore[reportPrivateUsage]
+                await pilot.pause()
+
+                table = app.query_one("#notifications-table", NotificationsDataTable)
+                row_key = next(iter(table.rows))
+                self.assertEqual(
+                    row_key.value,
+                    "notif:issue:acme/repo::https://github.com/acme/repo/issues/7",
+                )
+                row = table.get_row(row_key)
+                self.assertEqual(row[1], "#7")
+                self.assertEqual(row[4], "mention (issue)")

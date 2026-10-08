@@ -29,6 +29,7 @@ _Item = tuple[Mapping[str, object], str | None]
 def _make_notification(
     reason: str, subject_type: str = "PullRequest", repository: str = "acme/repo"
 ) -> dict[str, object]:
+    path = "issues" if subject_type == "Issue" else "pulls"
     return {
         "id": "123",
         "reason": reason,
@@ -38,9 +39,9 @@ def _make_notification(
         "subject": {
             "type": subject_type,
             "title": "Update tests",
-            "url": f"https://api.github.com/repos/{repository}/pulls/1",
+            "url": f"https://api.github.com/repos/{repository}/{path}/1",
             "latest_comment_url": (
-                f"https://api.github.com/repos/{repository}/pulls/comments/456"
+                f"https://api.github.com/repos/{repository}/{path}/comments/456"
             ),
         },
     }
@@ -204,10 +205,42 @@ class GetNotificationsTests(unittest.TestCase):
                     ],
                 )
 
-    def test_still_excludes_authored_non_pr_and_other_org_notifications(self) -> None:
+    def test_includes_issue_notifications(self) -> None:
+        for reason in ("mention", "comment", "author", "assign"):
+            with self.subTest(reason=reason):
+                with (
+                    patch.object(
+                        github,
+                        "_run_gh_api",
+                        return_value=[_make_notification(reason, "Issue")],
+                    ),
+                    patch.object(github, "_run_gh_graphql") as run_graphql,
+                ):
+                    notifications = github.get_notifications(["acme"])
+
+                run_graphql.assert_not_called()
+                self.assertEqual(
+                    notifications,
+                    [
+                        github.Notification(
+                            id="123",
+                            reason=reason,
+                            title="Update tests",
+                            repository="acme/repo",
+                            url="https://github.com/acme/repo/issues/1",
+                            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                            issue_number=1,
+                        )
+                    ],
+                )
+
+    def test_excludes_authored_pr_other_type_and_other_org_notifications(
+        self,
+    ) -> None:
         for reason, subject_type, repository in (
             ("author", "PullRequest", "acme/repo"),
-            ("review_requested", "Issue", "acme/repo"),
+            ("review_requested", "Release", "acme/repo"),
+            ("mention", "Issue", "outside/repo"),
             ("review_requested", "PullRequest", "outside/repo"),
         ):
             with self.subTest(

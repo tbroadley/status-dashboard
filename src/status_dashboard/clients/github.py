@@ -133,9 +133,11 @@ query {{
         latestReviews(first: 20) {{
           nodes {{
             author {{
+              __typename
               login
             }}
             state
+            viewerDidAuthor
           }}
         }}
         commits(last: 1) {{
@@ -208,9 +210,11 @@ query {{
         latestReviews(first: 20) {{
           nodes {{
             author {{
+              __typename
               login
             }}
             state
+            viewerDidAuthor
           }}
         }}
       }}
@@ -300,6 +304,26 @@ def _get_list(d: _JsonDict, key: str) -> _JsonList:
     return []
 
 
+def _is_bot(author: _JsonDict) -> bool:
+    login = _get_str(author, "login").lower()
+    return (
+        _get_str(author, "__typename") == "Bot"
+        or login.endswith("[bot]")
+        or login in BOT_REVIEWERS
+    )
+
+
+def _reviews_by_others(reviews: _JsonList) -> _JsonList:
+    """Reviews submitted by humans other than me."""
+    return [
+        r
+        for r in reviews
+        if r
+        and not _get_bool(r, "viewerDidAuthor")
+        and not _is_bot(_get_dict(r, "author"))
+    ]
+
+
 def _parse_pr_node(pr: _JsonDict) -> PullRequest | None:
     """Parse a PR node from the GraphQL response into a PullRequest."""
     if not pr:
@@ -308,11 +332,7 @@ def _parse_pr_node(pr: _JsonDict) -> PullRequest | None:
     latest_reviews = _get_dict(pr, "latestReviews")
     reviews = _get_list(latest_reviews, "nodes")
 
-    human_reviews = [
-        r
-        for r in reviews
-        if _get_str(_get_dict(r, "author"), "login").lower() not in BOT_REVIEWERS
-    ]
+    human_reviews = _reviews_by_others(reviews)
 
     review_decision = _get_str(pr, "reviewDecision")
     is_approved = review_decision == "APPROVED"
@@ -568,12 +588,7 @@ def get_review_requests(orgs: list[str] | None = None) -> list[ReviewRequest]:
         # Check if someone else has already submitted a review
         lr_wrapper = _get_dict(pr, "latestReviews")
         reviews = _get_list(lr_wrapper, "nodes")
-        human_reviews = [
-            r
-            for r in reviews
-            if _get_str(_get_dict(r, "author"), "login").lower() not in BOT_REVIEWERS
-        ]
-        has_other_review = len(human_reviews) > 0
+        has_other_review = len(_reviews_by_others(reviews)) > 0
 
         repo_info = _get_dict(pr, "repository")
         author_info = _get_dict(pr, "author")
@@ -630,6 +645,8 @@ class _PRActivity:
     state: str
     my_last_activity: datetime | None
     others_last_activity: datetime | None
+    directly_requested: bool = False
+    i_participated: bool = False
 
 
 _PR_ACTIVITY_FIELDS = """
@@ -640,16 +657,10 @@ _PR_ACTIVITY_FIELDS = """
       reviews(last: 30) {
         nodes { viewerDidAuthor submittedAt author { __typename login } }
       }
+      reviewRequests(first: 30) {
+        nodes { requestedReviewer { ... on User { isViewer } } }
+      }
 """
-
-
-def _is_bot(author: _JsonDict) -> bool:
-    login = _get_str(author, "login").lower()
-    return (
-        _get_str(author, "__typename") == "Bot"
-        or login.endswith("[bot]")
-        or login in BOT_REVIEWERS
-    )
 
 
 def _get_pr_activity(
@@ -682,6 +693,7 @@ def _get_pr_activity(
 
         mine: list[datetime] = []
         others: list[datetime] = []
+        participated = False
         items = [
             (node, _get_str(node, "createdAt"))
             for node in _get_list(_get_dict(pr, "comments"), "nodes")
@@ -690,7 +702,11 @@ def _get_pr_activity(
             for node in _get_list(_get_dict(pr, "reviews"), "nodes")
         ]
         for node, timestamp in items:
-            if not node or not timestamp:  # pending reviews have no submittedAt
+            if not node:
+                continue
+            if _get_bool(node, "viewerDidAuthor"):
+                participated = True
+            if not timestamp:  # pending reviews have no submittedAt
                 continue
             if _get_bool(node, "viewerDidAuthor"):
                 mine.append(_parse_datetime(timestamp))
@@ -701,6 +717,12 @@ def _get_pr_activity(
             state=_get_str(pr, "state"),
             my_last_activity=max(mine, default=None),
             others_last_activity=max(others, default=None),
+            directly_requested=any(
+                _get_bool(_get_dict(req, "requestedReviewer"), "isViewer")
+                for req in _get_list(_get_dict(pr, "reviewRequests"), "nodes")
+                if req
+            ),
+            i_participated=participated,
         )
     return activity
 
@@ -708,16 +730,18 @@ def _get_pr_activity(
 def _is_settled(notification: Notification, activity: _PRActivity | None) -> bool:
     """Whether a notification no longer needs attention.
 
-    True for review requests on merged/closed PRs, and for PRs where my latest
-    review or comment is newer than any human activity by others.
+    True for review requests on merged/closed PRs; for review requests that
+    never named me directly (e.g. only a team I'm in) on PRs I haven't taken
+    part in; and for PRs where my latest review or comment is newer than any
+    human activity by others.
     """
     if activity is None:
         return False
-    if notification.reason == "review_requested" and activity.state in (
-        "MERGED",
-        "CLOSED",
-    ):
-        return True
+    if notification.reason == "review_requested":
+        if activity.state in ("MERGED", "CLOSED"):
+            return True
+        if not activity.directly_requested and not activity.i_participated:
+            return True
     if activity.my_last_activity is None:
         return False
     return (

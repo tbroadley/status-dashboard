@@ -124,3 +124,9 @@ Each PR appears in at most one table. A notification is hidden while its PR is
 shown in My PRs or Review Requests (PRs hidden there still show notifications).
 It is also hidden once settled: your latest review or comment is newer than any
 human activity on the PR, or it is a review request on a merged or closed PR.
+Review-request notifications that only reached you through a team (you are not
+a requested reviewer yourself) are hidden unless you have commented on or
+reviewed the PR.
+
+The Review Requests ✓ means another human has reviewed the PR; reviews by bots
+and by you don't count.

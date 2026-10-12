@@ -24,6 +24,7 @@ def _make_pr(
 
 
 _Item = tuple[Mapping[str, object], str | None]
+_JsonNodes = list[dict[str, dict[str, bool]]]
 
 
 def _make_notification(
@@ -144,6 +145,43 @@ class GetReviewRequestsTests(unittest.TestCase):
         for counts in [{}, {"additions": None, "deletions": None}]:
             with self.subTest(counts=counts):
                 self._assert_line_counts(counts, 0, 0)
+
+    def test_reviewed_mark_counts_only_other_humans(self) -> None:
+        bot = {"author": {"__typename": "Bot", "login": "some-review-bot"}}
+        human = {"author": {"__typename": "User", "login": "alice"}}
+        me = {**human, "viewerDidAuthor": True}
+        for name, reviews, reviewed in (
+            ("no reviews", [], False),
+            ("bot review", [bot], False),
+            ("my review", [me], False),
+            ("human review", [bot, human], True),
+        ):
+            with self.subTest(name):
+                node = {
+                    "number": 1,
+                    "createdAt": "2026-01-01T00:00:00Z",
+                    "reviewRequests": {
+                        "nodes": [{"requestedReviewer": {"login": "reviewer"}}]
+                    },
+                    "latestReviews": {
+                        "nodes": [{**r, "state": "COMMENTED"} for r in reviews]
+                    },
+                }
+                with (
+                    patch.object(github, "get_my_username", return_value="reviewer"),
+                    patch.object(
+                        github,
+                        "_run_gh_graphql",
+                        return_value={"data": {"search": {"nodes": [node]}}},
+                    ),
+                ):
+                    prs = github.get_review_requests(["acme"])
+                self.assertEqual(prs[0].has_other_review, reviewed)
+
+                pr = github._parse_pr_node(node)  # pyright: ignore[reportPrivateUsage]
+                assert pr is not None
+                self.assertEqual(pr.has_review, reviewed)
+                self.assertEqual(pr.needs_response, reviewed)
 
     def _assert_line_counts(
         self, counts: Mapping[str, int | None], additions: int, deletions: int
@@ -318,13 +356,44 @@ class GetNotificationsTests(unittest.TestCase):
                 True,
             ),
         ]
-        for name, reason, state, comments, reviews, visible in cases:
+        team_only: _JsonNodes = [{"requestedReviewer": {}}]
+        team_cases: list[
+            tuple[str, str, str, list[_Item], list[_Item], bool, _JsonNodes]
+        ] = [
+            ("team-only request", "review_requested", "OPEN", [], [], False, team_only),
+            ("no request left", "review_requested", "OPEN", [], [], False, []),
+            (
+                "team-only request, human reply after my review",
+                "review_requested",
+                "OPEN",
+                [(human, late)],
+                [(me, early)],
+                True,
+                team_only,
+            ),
+            (
+                "team-only request, my pending review",
+                "review_requested",
+                "OPEN",
+                [],
+                [(me, None)],
+                True,
+                team_only,
+            ),
+            ("mention, not requested", "mention", "OPEN", [], [], True, []),
+        ]
+        direct = [{"requestedReviewer": {"isViewer": False}}] + [
+            {"requestedReviewer": {"isViewer": True}}
+        ]
+        all_cases = [(*case, direct) for case in cases] + team_cases
+        for name, reason, state, comments, reviews, visible, requests in all_cases:
             with self.subTest(name):
                 activity = {
                     "data": {
                         "pr0": {
                             "pullRequest": {
                                 "state": state,
+                                "reviewRequests": {"nodes": requests},
                                 "comments": {
                                     "nodes": [
                                         {**author, "createdAt": at}

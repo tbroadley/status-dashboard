@@ -427,7 +427,7 @@ class ReviewRequestsDataTable(VimDataTable):
     """DataTable for review requests with remove reviewer binding."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("x", "remove_self_as_reviewer", "Remove & Unsub"),
+        Binding("x", "app.remove_self_as_reviewer", "Remove & Unsub"),
         Binding("c", "app.copy_pr_link", "Copy Link"),
     ]
 

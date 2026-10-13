@@ -128,7 +128,7 @@ class NotificationDedupeTests(unittest.IsolatedAsyncioTestCase):
                 _ = app.query_one("#review-requests-table").focus()
                 await pilot.pause()
 
-                app.action_remove_self_as_reviewer()
+                await pilot.press("x")
                 await pilot.pause()
                 await pilot.press("y")
                 await app.workers.wait_for_complete()  # pyright: ignore[reportUnknownMemberType]

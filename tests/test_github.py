@@ -432,3 +432,41 @@ class GetNotificationsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     _ = unittest.main()
+
+
+class UnsubscribeFromPRTests(unittest.TestCase):
+    def test_unsubscribes_using_pr_node_id(self) -> None:
+        response = {
+            "data": {
+                "updateSubscription": {
+                    "subscribable": {"viewerSubscription": "UNSUBSCRIBED"}
+                }
+            }
+        }
+        with (
+            patch.object(
+                github, "_run_gh_api", return_value={"node_id": "PR_abc"}
+            ) as run_api,
+            patch.object(github, "_run_gh_graphql", return_value=response) as run_gql,
+        ):
+            self.assertTrue(github.unsubscribe_from_pr("acme/repo", 7))
+
+        run_api.assert_called_once_with("repos/acme/repo/pulls/7")
+        query = cast(str, run_gql.call_args.args[0])
+        self.assertIn('subscribableId: "PR_abc"', query)
+        self.assertIn("state: UNSUBSCRIBED", query)
+
+    def test_fails_without_node_id(self) -> None:
+        with (
+            patch.object(github, "_run_gh_api", return_value=None),
+            patch.object(github, "_run_gh_graphql") as run_gql,
+        ):
+            self.assertFalse(github.unsubscribe_from_pr("acme/repo", 7))
+        run_gql.assert_not_called()
+
+    def test_fails_when_mutation_fails(self) -> None:
+        with (
+            patch.object(github, "_run_gh_api", return_value={"node_id": "PR_abc"}),
+            patch.object(github, "_run_gh_graphql", return_value=None),
+        ):
+            self.assertFalse(github.unsubscribe_from_pr("acme/repo", 7))

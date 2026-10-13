@@ -111,7 +111,7 @@ AWS CLI 40s (whole process), Linear 10s.
 
 **GitHub** (`clients/github.py`):
 - Uses `gh api graphql` subprocess for queries
-- Functions: `get_my_prs()`, `get_review_requests()`, `squash_merge_pr()`, `remove_self_as_reviewer()`
+- Functions: `get_my_prs()`, `get_review_requests()`, `squash_merge_pr()`, `remove_self_as_reviewer()`, `unsubscribe_from_pr()`
 
 **Tasks** (`clients/tasks.py`, `task_store.py`):
 - No Google API calls. The AWS CLI's credential chain owns authentication.

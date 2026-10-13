@@ -427,7 +427,7 @@ class ReviewRequestsDataTable(VimDataTable):
     """DataTable for review requests with remove reviewer binding."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("x", "remove_self_as_reviewer", "Remove Self"),
+        Binding("x", "remove_self_as_reviewer", "Remove & Unsub"),
         Binding("c", "app.copy_pr_link", "Copy Link"),
     ]
 
@@ -2138,7 +2138,7 @@ class StatusDashboard(App[None]):
             self.notify("Failed to update assignment", severity="error")
 
     def action_remove_self_as_reviewer(self) -> None:
-        """Remove yourself as a reviewer from the selected PR."""
+        """Remove yourself as a reviewer from the selected PR and unsubscribe."""
         focused = self.focused
         if not isinstance(focused, VimDataTable):
             return
@@ -2205,7 +2205,9 @@ class StatusDashboard(App[None]):
             self.push_screen(  # pyright: ignore[reportCallIssue]
                 ConfirmationModal(
                     title="Remove Self as Reviewer",
-                    message=f"Remove yourself from {repo} PR #{pr_number}?",
+                    message=(
+                        f"Remove yourself from {repo} PR #{pr_number} and unsubscribe?"
+                    ),
                     confirm_label="Remove",
                 ),
                 handle_remove_reviewer_confirmation,  # pyright: ignore[reportArgumentType]
@@ -2224,7 +2226,16 @@ class StatusDashboard(App[None]):
             github.remove_self_as_reviewer, repo, pr_number
         )
         if success:
-            self.notify(f"Removed from PR #{pr_number}")
+            unsubscribed = await asyncio.to_thread(
+                github.unsubscribe_from_pr, repo, pr_number
+            )
+            if unsubscribed:
+                self.notify(f"Removed from PR #{pr_number} and unsubscribed")
+            else:
+                self.notify(
+                    f"Removed from PR #{pr_number}, but failed to unsubscribe",
+                    severity="warning",
+                )
             for notif in removed_notifications:
                 _ = await asyncio.to_thread(github.mark_notification_read, notif.id)
         else:

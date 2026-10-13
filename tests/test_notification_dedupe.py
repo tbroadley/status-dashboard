@@ -107,15 +107,17 @@ class NotificationDedupeTests(unittest.IsolatedAsyncioTestCase):
                     [f"{review_request.repository}#{review_request.number}"],
                 )
 
-    async def test_removing_self_as_reviewer_marks_pr_notifications_read(
+    async def test_removing_self_as_reviewer_unsubscribes_and_marks_read(
         self,
     ) -> None:
         review_request = fake_review_requests()[0]
         notification = _notification(review_request.repository, review_request.number)
         mark_read = MagicMock(return_value=True)
+        unsubscribe = MagicMock(return_value=True)
         with (
             _patched(),
             patch.object(github, "remove_self_as_reviewer", return_value=True),
+            patch.object(github, "unsubscribe_from_pr", unsubscribe),
             patch.object(github, "mark_notification_read", mark_read),
         ):
             app = StatusDashboard()
@@ -132,6 +134,9 @@ class NotificationDedupeTests(unittest.IsolatedAsyncioTestCase):
                 await app.workers.wait_for_complete()  # pyright: ignore[reportUnknownMemberType]
                 await pilot.pause()
 
+                unsubscribe.assert_called_once_with(
+                    review_request.repository, review_request.number
+                )
                 mark_read.assert_called_once_with(notification.id)
                 self.assertEqual(_notification_ids(app), [])
                 self.assertEqual(app._gh_notifications, [])  # pyright: ignore[reportPrivateUsage]

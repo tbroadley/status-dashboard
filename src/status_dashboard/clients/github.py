@@ -484,6 +484,41 @@ def remove_self_as_reviewer(repo: str, pr_number: int) -> bool:
         return False
 
 
+def unsubscribe_from_pr(repo: str, pr_number: int) -> bool:
+    """Unsubscribe the current user from a PR's notifications.
+
+    Args:
+        repo: Repository in 'owner/name' format
+        pr_number: PR number
+
+    Returns:
+        True if successful, False otherwise
+    """
+    pr = _run_gh_api(f"repos/{repo}/pulls/{pr_number}")
+    node_id = pr.get("node_id") if isinstance(pr, dict) else None
+    if not isinstance(node_id, str) or not node_id:
+        logger.warning("Failed to look up node ID for %s#%d", repo, pr_number)
+        return False
+    mutation = f"""
+    mutation {{
+      updateSubscription(
+        input: {{subscribableId: {json.dumps(node_id)}, state: UNSUBSCRIBED}}
+      ) {{
+        subscribable {{ viewerSubscription }}
+      }}
+    }}
+    """
+    data = _run_gh_graphql(mutation)
+    subscription = _get_dict(
+        _get_dict(_get_dict(data or {}, "data"), "updateSubscription"),
+        "subscribable",
+    )
+    if _get_str(subscription, "viewerSubscription") != "UNSUBSCRIBED":
+        logger.warning("Failed to unsubscribe from %s#%d", repo, pr_number)
+        return False
+    return True
+
+
 def squash_merge_pr(repo: str, pr_number: int) -> bool:
     """Squash merge a PR.
 

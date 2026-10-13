@@ -447,26 +447,31 @@ def get_my_prs(orgs: list[str] | None = None) -> list[PullRequest]:
 
 
 def remove_self_as_reviewer(repo: str, pr_number: int) -> bool:
-    """Remove the current user as a reviewer from a PR.
+    """Remove the current user as a requested reviewer from a PR.
+
+    `gh pr edit --remove-reviewer @me` exits 0 without removing anyone, since gh
+    does not expand `@me` for reviewers, so this calls the REST API with the login.
 
     Args:
         repo: Repository in 'owner/name' format
         pr_number: PR number
 
     Returns:
-        True if successful, False otherwise
+        True if the user is no longer a requested reviewer, False otherwise
     """
+    login = get_my_username()
+    if not login:
+        return False
     try:
         result = subprocess.run(
             [
                 "gh",
-                "pr",
-                "edit",
-                str(pr_number),
-                "--repo",
-                repo,
-                "--remove-reviewer",
-                "@me",
+                "api",
+                "-X",
+                "DELETE",
+                f"repos/{repo}/pulls/{pr_number}/requested_reviewers",
+                "-f",
+                f"reviewers[]={login}",
             ],
             capture_output=True,
             text=True,
@@ -475,13 +480,23 @@ def remove_self_as_reviewer(repo: str, pr_number: int) -> bool:
         if result.returncode != 0:
             logger.warning("Failed to remove reviewer: %s", result.stderr.strip())
             return False
-        return True
+        pr: _JsonDict = json.loads(result.stdout)  # pyright: ignore[reportAny]
     except subprocess.TimeoutExpired:
         logger.error("gh command timed out after %d seconds", SUBPROCESS_TIMEOUT)
+        return False
+    except json.JSONDecodeError as e:
+        logger.error("Failed to parse gh output: %s", e)
         return False
     except FileNotFoundError:
         logger.error("gh CLI not found. Install it from https://cli.github.com/")
         return False
+    remaining = {
+        _get_str(r, "login").lower() for r in _get_list(pr, "requested_reviewers")
+    }
+    if login.lower() in remaining:
+        logger.warning("Still a requested reviewer on %s#%d", repo, pr_number)
+        return False
+    return True
 
 
 def unsubscribe_from_pr(repo: str, pr_number: int) -> bool:

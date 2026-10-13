@@ -1,3 +1,5 @@
+import json
+import subprocess
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import cast
@@ -470,3 +472,42 @@ class UnsubscribeFromPRTests(unittest.TestCase):
             patch.object(github, "_run_gh_graphql", return_value=None),
         ):
             self.assertFalse(github.unsubscribe_from_pr("acme/repo", 7))
+
+
+class RemoveSelfAsReviewerTests(unittest.TestCase):
+    def _run(self, stdout: str, returncode: int = 0) -> tuple[bool, list[str]]:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=returncode, stdout=stdout, stderr=""
+        )
+        with (
+            patch.object(github, "get_my_username", return_value="Me"),
+            patch.object(subprocess, "run", return_value=completed) as run,
+        ):
+            result = github.remove_self_as_reviewer("acme/repo", 7)
+        return result, cast(list[str], run.call_args.args[0])
+
+    def test_deletes_review_request_for_own_login(self) -> None:
+        result, cmd = self._run(
+            json.dumps({"requested_reviewers": [{"login": "other"}]})
+        )
+        self.assertTrue(result)
+        self.assertEqual(
+            cmd,
+            [
+                "gh",
+                "api",
+                "-X",
+                "DELETE",
+                "repos/acme/repo/pulls/7/requested_reviewers",
+                "-f",
+                "reviewers[]=Me",
+            ],
+        )
+
+    def test_fails_if_still_requested(self) -> None:
+        result, _ = self._run(json.dumps({"requested_reviewers": [{"login": "me"}]}))
+        self.assertFalse(result)
+
+    def test_fails_on_api_error(self) -> None:
+        result, _ = self._run("", returncode=1)
+        self.assertFalse(result)

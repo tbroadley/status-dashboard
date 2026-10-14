@@ -555,6 +555,11 @@ def _short_repo(repo: str) -> str:
     return repo[:11]
 
 
+def _changes_text(additions: int, deletions: int) -> Text:
+    """Render a PR's line counts as green additions and red deletions."""
+    return Text.assemble((f"+{additions}", "green"), " ", (f"−{deletions}", "red"))
+
+
 def _is_macos_dark_mode() -> bool | None:
     """Detect macOS system appearance. Returns True for dark, False for light, None if not macOS."""
     if sys.platform != "darwin":
@@ -717,8 +722,11 @@ class StatusDashboard(App[None]):
 
         # Set up table columns - auto-sized based on content
         my_prs = self.query_one("#my-prs-table", MyPRsDataTable)
-        _ = my_prs.add_columns("#", "PR", "Title", "Repo", "Status", "CI", "Cmt", "Rvw")
+        _ = my_prs.add_columns(
+            "#", "PR", "Title", "Repo", "Status", "CI", "Cmt", "Changes", "Rvw"
+        )
         self._setup_table(my_prs)
+        my_prs.cursor_foreground_priority = "renderable"
 
         reviews = self.query_one("#review-requests-table", ReviewRequestsDataTable)
         _ = reviews.add_columns(
@@ -827,7 +835,15 @@ class StatusDashboard(App[None]):
 
         if not visible_prs:
             _ = table.add_row(
-                "", "", Text("No open PRs", style="dim italic"), "", "", "", "", ""
+                "",
+                "",
+                Text("No open PRs", style="dim italic"),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
             )
         else:
             for pr in visible_prs:
@@ -870,6 +886,7 @@ class StatusDashboard(App[None]):
                     status,
                     ci_display,
                     comment_display,
+                    _changes_text(pr.additions, pr.deletions),
                     reviewers_display,
                     key=pr.url,
                 )
@@ -940,9 +957,6 @@ class StatusDashboard(App[None]):
                 age = github._relative_time(pr.created_at)  # pyright: ignore[reportPrivateUsage]
                 title = pr.title[:40] + "…" if len(pr.title) > 40 else pr.title
                 reviewed = "✓" if pr.has_other_review else ""
-                changes = Text.assemble(
-                    (f"+{pr.additions}", "green"), " ", (f"−{pr.deletions}", "red")
-                )
                 _ = table.add_row(
                     "",
                     f"#{pr.number}",
@@ -950,7 +964,7 @@ class StatusDashboard(App[None]):
                     repo,
                     f"@{pr.author}",
                     age,
-                    changes,
+                    _changes_text(pr.additions, pr.deletions),
                     reviewed,
                     key=f"review:{pr.repository}:{pr.number}:{pr.url}",
                 )

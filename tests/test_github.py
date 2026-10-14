@@ -133,6 +133,36 @@ class GetMyPRsTests(unittest.TestCase):
         self.assertEqual([pr.url for pr in prs], [handed_off_pr.url])
 
 
+class RunMyPrsQueryTests(unittest.TestCase):
+    def test_fetches_line_counts(self) -> None:
+        for counts, additions, deletions in [
+            ({"additions": 128, "deletions": 42}, 128, 42),
+            ({"additions": 0, "deletions": 73}, 0, 73),
+            ({}, 0, 0),
+            ({"additions": None, "deletions": None}, 0, 0),
+        ]:
+            with self.subTest(counts=counts):
+                node = {
+                    "number": 1,
+                    "url": "https://github.com/acme/repo/pull/1",
+                    "createdAt": "2026-01-01T00:00:00Z",
+                    **counts,
+                }
+                with patch.object(
+                    github,
+                    "_run_gh_graphql",
+                    return_value={"data": {"search": {"nodes": [node]}}},
+                ) as run_query:
+                    prs = github._run_my_prs_query("author:@me")  # pyright: ignore[reportPrivateUsage]
+
+                query = cast(str, run_query.call_args.args[0])
+                self.assertIn("\n        additions\n", query)
+                self.assertIn("\n        deletions\n", query)
+                self.assertEqual(len(prs), 1)
+                self.assertEqual(prs[0].additions, additions)
+                self.assertEqual(prs[0].deletions, deletions)
+
+
 class GetReviewRequestsTests(unittest.TestCase):
     def test_fetches_line_counts(self) -> None:
         for additions, deletions in [(128, 42), (1050, 0), (0, 73), (0, 0)]:

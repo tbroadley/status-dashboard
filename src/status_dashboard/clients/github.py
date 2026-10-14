@@ -39,6 +39,8 @@ class PullRequest:
     unresolved_comment_count: int = 0
     reviewers: list[str] | None = None
     assignees: list[str] | None = None
+    additions: int = 0
+    deletions: int = 0
 
 
 @dataclass
@@ -126,6 +128,8 @@ query {{
         isDraft
         createdAt
         mergeable
+        additions
+        deletions
         repository {{
           nameWithOwner
         }}
@@ -391,6 +395,8 @@ def _parse_pr_node(pr: _JsonDict) -> PullRequest | None:
         unresolved_comment_count=unresolved_count,
         reviewers=reviewers,
         assignees=assignees,
+        additions=_get_int(pr, "additions"),
+        deletions=_get_int(pr, "deletions"),
     )
 
 

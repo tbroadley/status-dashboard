@@ -17,6 +17,8 @@ def fake_prs() -> list[github.PullRequest]:
             is_approved=True,
             ci_status="SUCCESS",
             reviewers=["alice"],
+            additions=212,
+            deletions=35,
         ),
         github.PullRequest(
             number=87,
@@ -27,6 +29,8 @@ def fake_prs() -> list[github.PullRequest]:
             is_draft=True,
             ci_status="PENDING",
             reviewers=[],
+            additions=940,
+            deletions=610,
         ),
         github.PullRequest(
             number=310,
@@ -39,6 +43,8 @@ def fake_prs() -> list[github.PullRequest]:
             ci_status="FAILURE",
             unresolved_comment_count=3,
             reviewers=["bob", "carol"],
+            additions=18,
+            deletions=4,
         ),
         github.PullRequest(
             number=55,
@@ -50,6 +56,8 @@ def fake_prs() -> list[github.PullRequest]:
             ci_status="SUCCESS",
             mergeable="CONFLICTING",
             reviewers=["dave"],
+            additions=0,
+            deletions=0,
         ),
     ]
 

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import ClassVar, ParamSpec, TypeAlias, TypeVar, cast, final, override
 
 from dotenv import find_dotenv, load_dotenv
+from rich.markup import escape
 from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
@@ -449,6 +450,7 @@ class MyPRsDataTable(VimDataTable):
         Binding("x", "app.close_pr", "Close"),
         Binding("c", "app.copy_pr_link", "Copy Link"),
         Binding("H", "app.hide_pr", "Hide"),
+        Binding("a", "app.run_gated_checks", "Run Checks"),
     ]
 
 
@@ -863,6 +865,7 @@ class StatusDashboard(App[None]):
                 else:
                     ci_display = {
                         "SUCCESS": "pass",
+                        github.AWAITING_APPROVAL: "pass*",
                         "FAILURE": "fail",
                         "PENDING": "...",
                         "EXPECTED": "...",
@@ -2394,6 +2397,72 @@ class StatusDashboard(App[None]):
                 self._my_prs.insert(removed_index, removed_pr)
                 self._render_my_prs_table()
             self.notify("Failed to close PR", severity="error")
+
+    def action_run_gated_checks(self) -> None:
+        """Approve the checks on my selected PR that are waiting for approval."""
+        focused = self.focused
+        if not isinstance(focused, VimDataTable) or focused.id != "my-prs-table":
+            self.notify("Can only run checks from My PRs", severity="warning")
+            return
+        if focused.row_count == 0:
+            return
+
+        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
+        if not cell_key.row_key or not cell_key.row_key.value:
+            return
+        url = str(cell_key.row_key.value)
+        pr = next((p for p in self._my_prs if p.url == url), None)
+        if not pr:
+            return
+
+        if not pr.viewer_did_author:
+            self.notify("Can only run checks on PRs you authored", severity="warning")
+            return
+        checks = list(pr.gated_checks)
+        if not checks:
+            self.notify("No checks waiting to be run", severity="warning")
+            return
+
+        check_lines = "\n".join(f"• {escape(c.name)}" for c in checks)
+
+        def handle_confirmation(confirmed: bool) -> None:
+            if not confirmed:
+                return
+            # Optimistic update: the checks are now running.
+            previous_status = pr.ci_status
+            pr.gated_checks = []
+            pr.ci_status = "PENDING"
+            self._render_my_prs_table()
+            self._last_action_undoable = False
+            _ = self._do_run_gated_checks(pr, checks, previous_status)
+
+        self.push_screen(  # pyright: ignore[reportCallIssue]
+            ConfirmationModal(
+                title=f"Run checks on #{pr.number}",
+                message=f"Approve and run {len(checks)} gated "
+                + f"check{'s' if len(checks) != 1 else ''}?\n\n{check_lines}",
+                confirm_label="Run",
+            ),
+            handle_confirmation,  # pyright: ignore[reportArgumentType]
+        )
+
+    @work(exclusive=False)
+    async def _do_run_gated_checks(
+        self,
+        pr: github.PullRequest,
+        checks: list[github.GatedCheck],
+        previous_status: str | None,
+    ) -> None:
+        success = await asyncio.to_thread(github.approve_gated_checks, checks)
+        if success:
+            self.notify(f"Started {len(checks)} checks on PR #{pr.number}")
+        else:
+            # Rollback, unless a refresh has already replaced this PR.
+            if any(p is pr for p in self._my_prs):
+                pr.ci_status = previous_status
+                pr.gated_checks = checks
+                self._render_my_prs_table()
+            self.notify("Failed to run checks", severity="error")
 
     def action_hide_pr(self) -> None:
         """Permanently hide the selected PR from the My PRs view."""

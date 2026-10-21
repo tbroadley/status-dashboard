@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -21,6 +21,20 @@ BOT_REVIEWERS = {
 
 _JsonDict = dict[str, Any]  # pyright: ignore[reportExplicitAny]
 _JsonList = list[_JsonDict]
+
+
+@dataclass(frozen=True)
+class GatedCheck:
+    """A check run waiting on an environment approval the viewer can give."""
+
+    name: str
+    environment: str
+    environment_id: str
+    workflow_run_id: str
+
+
+# CI state for a PR whose checks have all passed except gated ones.
+AWAITING_APPROVAL = "AWAITING_APPROVAL"
 
 
 @dataclass
@@ -41,6 +55,8 @@ class PullRequest:
     assignees: list[str] | None = None
     additions: int = 0
     deletions: int = 0
+    viewer_did_author: bool = False
+    gated_checks: list[GatedCheck] = field(default_factory=list)
 
 
 @dataclass
@@ -130,6 +146,7 @@ query {{
         mergeable
         additions
         deletions
+        viewerDidAuthor
         repository {{
           nameWithOwner
         }}
@@ -397,6 +414,7 @@ def _parse_pr_node(pr: _JsonDict) -> PullRequest | None:
         assignees=assignees,
         additions=_get_int(pr, "additions"),
         deletions=_get_int(pr, "deletions"),
+        viewer_did_author=_get_bool(pr, "viewerDidAuthor"),
     )
 
 
@@ -449,7 +467,100 @@ def get_my_prs(orgs: list[str] | None = None) -> list[PullRequest]:
 
     # Both queries already scope to me, so their union needs no further filtering.
     all_prs = sorted(prs_by_url.values(), key=lambda pr: pr.created_at, reverse=True)
+    _add_gated_checks([pr for pr in all_prs if pr.ci_status == "PENDING"])
     return all_prs
+
+
+_CHECK_CONTEXTS_FIELDS = """
+      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) {
+        pageInfo { hasNextPage }
+        nodes {
+          __typename
+          ... on CheckRun {
+            name
+            status
+            pendingDeploymentRequest {
+              currentUserCanApprove
+              environment { ... on Environment { id name } }
+            }
+            checkSuite { workflowRun { id } }
+          }
+          ... on StatusContext { state }
+        }
+      } } } } }
+"""
+
+
+def _gated_check(context: _JsonDict) -> GatedCheck | None:
+    """The approval a waiting check run needs, if the viewer can give it."""
+    if _get_str(context, "status") != "WAITING":
+        return None
+    request = _get_dict(context, "pendingDeploymentRequest")
+    if not _get_bool(request, "currentUserCanApprove"):
+        return None
+    environment = _get_dict(request, "environment")
+    run = _get_dict(_get_dict(context, "checkSuite"), "workflowRun")
+    environment_id = _get_str(environment, "id")
+    run_id = _get_str(run, "id")
+    if not environment_id or not run_id:
+        return None
+    return GatedCheck(
+        name=_get_str(context, "name"),
+        environment=_get_str(environment, "name"),
+        environment_id=environment_id,
+        workflow_run_id=run_id,
+    )
+
+
+def _is_unfinished(context: _JsonDict) -> bool:
+    if _get_str(context, "__typename") == "StatusContext":
+        return _get_str(context, "state") in ("PENDING", "EXPECTED")
+    return _get_str(context, "status") != "COMPLETED"
+
+
+def _add_gated_checks(prs: list[PullRequest]) -> None:
+    """Find checks on pending PRs that are waiting for an approval I can give.
+
+    Fetching every check for every PR in the main search times out, so this
+    looks only at pending PRs, in one batched request. A PR whose only
+    unfinished checks are gated becomes AWAITING_APPROVAL: everything that ran
+    has passed. If the checks are truncated, unseen ones could still be
+    running, so the PR stays pending. On failure PRs are left unchanged.
+    """
+    if not prs:
+        return
+    parts: list[str] = []
+    for i, pr in enumerate(prs):
+        owner, _, name = pr.repository.partition("/")
+        parts.append(
+            f"pr{i}: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{"
+            + f" pullRequest(number: {pr.number}) {{ {_CHECK_CONTEXTS_FIELDS} }} }}"
+        )
+    result = _run_gh_graphql("query { " + "\n".join(parts) + " }")
+    data = _get_dict(result or {}, "data")
+    for i, pr in enumerate(prs):
+        commits = _get_list(
+            _get_dict(_get_dict(_get_dict(data, f"pr{i}"), "pullRequest"), "commits"),
+            "nodes",
+        )
+        if not commits:
+            continue
+        rollup = _get_dict(_get_dict(commits[0], "commit"), "statusCheckRollup")
+        contexts_wrapper = _get_dict(rollup, "contexts")
+        gated: list[GatedCheck] = []
+        blocked = False
+        for context in _get_list(contexts_wrapper, "nodes"):
+            if not context:
+                continue
+            check = _gated_check(context)
+            if check:
+                gated.append(check)
+            elif _is_unfinished(context):
+                blocked = True
+        truncated = _get_bool(_get_dict(contexts_wrapper, "pageInfo"), "hasNextPage")
+        pr.gated_checks = gated
+        if gated and not blocked and not truncated:
+            pr.ci_status = AWAITING_APPROVAL
 
 
 def remove_self_as_reviewer(repo: str, pr_number: int) -> bool:
@@ -536,6 +647,39 @@ def unsubscribe_from_pr(repo: str, pr_number: int) -> bool:
     )
     if _get_str(subscription, "viewerSubscription") != "UNSUBSCRIBED":
         logger.warning("Failed to unsubscribe from %s#%d", repo, pr_number)
+        return False
+    return True
+
+
+def approve_gated_checks(checks: list[GatedCheck]) -> bool:
+    """Approve the environments that gated checks are waiting on, so they run.
+
+    Approvals are per workflow run, so checks are grouped by run and approved in
+    one mutation. Returns True only if every run's approval succeeded.
+    """
+    environments_by_run: dict[str, list[str]] = {}
+    for check in checks:
+        env_ids = environments_by_run.setdefault(check.workflow_run_id, [])
+        if check.environment_id not in env_ids:
+            env_ids.append(check.environment_id)
+    if not environments_by_run:
+        return False
+
+    parts = [
+        f"run{i}: approveDeployments(input: {{"
+        + f"workflowRunId: {json.dumps(run_id)}, "
+        + f"environmentIds: {json.dumps(env_ids)}"
+        + "}) { deployments { id } }"
+        for i, (run_id, env_ids) in enumerate(environments_by_run.items())
+    ]
+    result = _run_gh_graphql("mutation { " + "\n".join(parts) + " }")
+    data = _get_dict(result or {}, "data")
+    if (
+        not result
+        or result.get("errors")
+        or any(not _get_dict(data, f"run{i}") for i in range(len(parts)))
+    ):
+        logger.warning("Failed to approve %d gated checks", len(checks))
         return False
     return True
 

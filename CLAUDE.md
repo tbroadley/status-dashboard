@@ -111,7 +111,11 @@ AWS CLI 40s (whole process), Linear 10s.
 
 **GitHub** (`clients/github.py`):
 - Uses `gh api graphql` subprocess for queries
-- Functions: `get_my_prs()`, `get_review_requests()`, `squash_merge_pr()`, `remove_self_as_reviewer()`, `unsubscribe_from_pr()`
+- Functions: `get_my_prs()`, `get_review_requests()`, `squash_merge_pr()`, `approve_gated_checks()`, `remove_self_as_reviewer()`, `unsubscribe_from_pr()`
+- Gated checks: check runs in `WAITING` on an environment approval the viewer can give.
+  `get_my_prs()` fetches check contexts only for pending PRs, in a second batched query
+  (fetching them in the main search times out). A pending PR whose only unfinished checks
+  are gated gets `ci_status == AWAITING_APPROVAL`, shown as `pass*`.
 
 **Tasks** (`clients/tasks.py`, `task_store.py`):
 - No Google API calls. The AWS CLI's credential chain owns authentication.

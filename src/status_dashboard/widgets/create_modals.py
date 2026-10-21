@@ -58,6 +58,7 @@ class ConfirmationModal(ModalScreen[bool]):
     }
 
     #confirm-message {
+        width: 100%;
         margin-bottom: 1;
     }
 

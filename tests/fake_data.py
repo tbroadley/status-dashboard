@@ -59,6 +59,32 @@ def fake_prs() -> list[github.PullRequest]:
             additions=0,
             deletions=0,
         ),
+        github.PullRequest(
+            number=61,
+            title="Add staging deploy preview",
+            repository="acme/infra",
+            url="https://github.com/acme/infra/pull/61",
+            created_at=now - timedelta(days=6),
+            ci_status=github.AWAITING_APPROVAL,
+            reviewers=[],
+            additions=48,
+            deletions=12,
+            viewer_did_author=True,
+            gated_checks=[
+                github.GatedCheck(
+                    name="Deploy preview (staging)",
+                    environment="staging-preview",
+                    environment_id="EN_staging",
+                    workflow_run_id="WFR_61",
+                ),
+                github.GatedCheck(
+                    name="Deploy preview (production)",
+                    environment="production-preview",
+                    environment_id="EN_production",
+                    workflow_run_id="WFR_61",
+                ),
+            ],
+        ),
     ]
 
 

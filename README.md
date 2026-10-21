@@ -113,6 +113,18 @@ lifecycle policy; they are not immutable against an authorized deleter.
 | `v` | Move to In Review |
 | `d` | Move to Done |
 
+### My PRs
+| Key | Action |
+|-----|--------|
+| `m` | Squash merge (approved PRs only) |
+| `x` | Close |
+| `H` | Hide |
+| `a` | Run gated checks, after a confirmation listing them |
+
+`pass*` in the CI column means every check has passed except ones waiting on a
+deployment environment approval that you can give. On a PR you authored, `a`
+approves those environments so the checks run.
+
 ### Review Requests
 | Key | Action |
 |-----|--------|

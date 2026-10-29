@@ -9,7 +9,7 @@ from unittest.mock import patch
 from status_dashboard.clients import tasks
 from status_dashboard.task_store import StoreError, decode_document, encode_document
 from status_dashboard.task_store_cli import csv_rows
-from tests.test_task_store import FakeS3, row
+from tests.test_task_store import FakeS3, client_error, row
 
 
 class TestTasks(unittest.TestCase):
@@ -22,14 +22,10 @@ class TestTasks(unittest.TestCase):
         self.fake = FakeS3([])
         env = patch.dict(
             os.environ,
-            {"TASKS_S3_URI": "s3://example-bucket/tasks.json", "TASKS_AWS_CLI": "aws"},
+            {"TASKS_S3_URI": "s3://example-bucket/tasks.json"},
         )
         _ = cast(object, self.enterContext(env))
-        runner = patch(
-            "status_dashboard.task_store.subprocess.run", side_effect=self.fake.run
-        )
-        _ = runner.start()
-        self.addCleanup(runner.stop)
+        _ = cast(object, self.enterContext(self.fake.installed()))
 
     def test_due_filter_order_and_completed_history(self):
         for name, due in [
@@ -180,8 +176,56 @@ class TestTasks(unittest.TestCase):
         self.assertTrue(tasks.update_task(second, content="Updated"))
         self.assertEqual([t.content for t in tasks.get_today_tasks()], ["Updated"])
 
+    def test_save_applies_edits_in_one_write_and_reports_each(self):
+        a = tasks.create_task("A")
+        b = tasks.create_task("B")
+        assert a and b
+        writes = len([c for c in self.fake.calls if c[0] == "put"])
+        results, rows = tasks.save(
+            [tasks.complete_edit(a), tasks.delete_edit("missing"), tasks.defer_edit(b)]
+        )
+        self.assertEqual(results, [True, False, True])
+        self.assertEqual(rows, decode_document(self.fake.objects["tasks.json"]))
+        self.assertEqual(len([c for c in self.fake.calls if c[0] == "put"]), writes + 2)
+        self.assertEqual(tasks.get_today_tasks(), [])
+
+    def test_reschedule_to_today_keeps_recurring_time(self):
+        rows = [
+            row("a", due="2020-01-01"),
+            row("b", due="2020-01-01T08:00:00"),
+            row("c", due="2020-01-01"),
+        ]
+        rows[1][5] = "every day at 9:30am"
+        self.assertTrue(
+            tasks.reschedule_to_today_edit(["a", "b"], today=self.today)(rows)
+        )
+        self.assertEqual(rows[0][4], self.today.isoformat())
+        self.assertTrue(rows[1][4].startswith(f"{self.today.isoformat()}T09:30"))
+        self.assertEqual(rows[2][4], "2020-01-01")
+        self.assertFalse(tasks.reschedule_to_today_edit(["zzz"])(rows))
+
+    def test_revert_undoes_only_what_the_edit_changed(self):
+        rows = [row("a", "A"), row("b", "B"), row("c", "C")]
+        undo = tasks.revert(rows, tasks.complete_edit("a"))
+        assert undo is not None
+        after = [r.copy() for r in rows]
+        _ = tasks.complete_edit("a")(after)
+        after[0][1] = "Renamed meanwhile"
+        _ = tasks.delete_edit("c")(after)
+        self.assertTrue(undo(after))
+        self.assertEqual(after[0], row("a", "Renamed meanwhile"))
+        self.assertEqual([r[0] for r in after], ["a", "b"])
+
+        undo_delete = tasks.revert(rows, tasks.delete_edit("b"))
+        assert undo_delete is not None
+        gone = [r.copy() for r in rows if r[0] != "b"]
+        self.assertTrue(undo_delete(gone))
+        self.assertIn(row("b", "B"), gone)
+
+        self.assertIsNone(tasks.revert(rows, tasks.delete_edit("missing")))
+
     def test_failure_is_not_empty_list(self):
-        self.fake.fail = "ExpiredToken"
+        self.fake.fail = client_error("ExpiredToken")
         with self.assertRaises(StoreError):
             _ = tasks.get_today_tasks()
         with self.assertRaises(StoreError):

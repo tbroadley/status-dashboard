@@ -60,10 +60,9 @@ PATCHES = [
         return_value=fake_data.fake_notifications(),
     ),
     patch(
-        "status_dashboard.clients.tasks.get_tasks_for_date",
-        return_value=fake_data.fake_todoist_tasks(),
+        "status_dashboard.clients.tasks.load",
+        return_value=fake_data.fake_task_rows(),
     ),
-    patch("status_dashboard.clients.tasks.get_projects", return_value=[]),
     patch(
         "status_dashboard.clients.linear.get_my_issues",
         return_value=fake_data.fake_linear_issues(),

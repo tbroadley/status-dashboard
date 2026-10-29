@@ -12,7 +12,7 @@ Status Dashboard is a terminal UI application (TUI) built with [Textual](https:/
 - Python 3.11+
 - Textual (TUI framework)
 - httpx (HTTP client for Linear)
-- AWS CLI (task storage; credentials managed outside the app)
+- boto3 (task storage; credentials from the standard AWS chain, managed outside the app)
 - GitHub CLI (`gh`) for GitHub API access
 
 ## Project Structure
@@ -41,7 +41,7 @@ uv run status-dashboard
 
 Required in `.env` file (see `.env.example`):
 - `TASKS_S3_URI` (local configuration only; never commit the actual location)
-- Optional `TASKS_AWS_REGION` and `TASKS_AWS_CLI`
+- Optional `TASKS_AWS_REGION`
 - `LINEAR_API_KEY`
 - `LINEAR_PROJECT`
 

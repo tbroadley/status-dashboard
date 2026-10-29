@@ -15,7 +15,6 @@ A terminal dashboard for tracking PRs, tasks stored in S3, and Linear issues.
    |----------|----------|-------------|
    | `TASKS_S3_URI` | Yes | S3 object URI for the shared task document (no built-in location) |
    | `TASKS_AWS_REGION` | No | AWS region override |
-   | `TASKS_AWS_CLI` | No | AWS CLI executable; defaults to `aws` on PATH |
    | `LINEAR_BW_ITEM` | Yes | Bitwarden item holding the Linear API key |
    | `LINEAR_API_KEY` | No | Set directly to bypass Bitwarden |
    | `LINEAR_PROJECT` | Yes | Name of the Linear project to show issues from |
@@ -24,7 +23,7 @@ A terminal dashboard for tracking PRs, tasks stored in S3, and Linear issues.
    | `GITHUB_EXTRA_PR_REPOS` | No | Comma-separated list of extra repos to show authored or assigned PRs from (e.g., `owner/repo1,owner/repo2`) |
    | `HIDDEN_REVIEW_REQUESTS` | No | JSON array of `[repo, pr_number]` pairs to hide from review requests |
 
-3. Install a current AWS CLI supporting `s3api put-object --if-match`, authenticate it (for SSO: `aws sso login`), then install and run:
+3. Make AWS credentials available through the standard chain (for SSO: `aws sso login`), then install and run:
    ```bash
    uv sync
    uv run status-dashboard
@@ -36,7 +35,7 @@ The task list is one S3 JSON document shared with Experience Sampling. There is
 no Google API dependency. Configure `TASKS_S3_URI` in
 `~/.config/status-dashboard/.env` (or under `XDG_CONFIG_HOME`); environment
 variables take precedence. Keep bucket names, keys, account identifiers, and
-credentials out of this repository. AWS credentials stay in the AWS CLI's normal
+credentials out of this repository. AWS credentials stay in the standard AWS
 credential chain, not in the task document.
 
 Use a private, encrypted bucket/prefix with appropriate IAM permissions. The
@@ -60,19 +59,23 @@ No migration tool fetches Google content. The JSON wire format is
 IDs must be nonempty and unique. Due dates are ISO dates or datetimes; recurrence
 rules, ordering and completion timestamps retain their existing meanings.
 
-Every edit reads the current object and ETag, saves the previous document to a
-uniquely named history object, then writes with `If-Match`. Conflicts re-read and
-reapply the edit, up to six attempts with jittered backoff. A failed backup
-prevents the write.
+Every edit applies to the latest known object and ETag, saves the previous
+document to a uniquely named history object, then writes with `If-Match`.
+The client keeps its last read or written version, so an edit usually needs no
+read first, and refreshes send `If-None-Match` to skip unchanged downloads. If
+that version is stale, the conditional write fails and the edit is redone on a
+fresh read. Conflicts re-read and reapply the edit, up to six attempts with
+jittered backoff. A failed backup prevents the write.
 Missing, malformed, or inaccessible data is an error, never an empty list.
 Reads/writes require connectivity and valid AWS credentials; offline edits are
 not queued. Lost write responses trigger a readback; if the result cannot be
 confirmed, the error explicitly warns that the save may have succeeded and to
-refresh before retrying. On read failure the dashboard retains its last
-successful view for the same day; navigation shows an unloaded state rather than
-mislabeling old rows. Failed optimistic edits roll back. The dashboard makes
-its writes one at a time, so older saves cannot overtake newer ones, and a
-refresh cannot undo a change that is still saving.
+refresh before retrying. The dashboard loads the whole list, so moving between
+days needs no request; on read failure it keeps its last successful view.
+Edits show immediately and save in the background; failed ones roll back. The
+dashboard makes its writes one at a time, so older saves cannot overtake newer
+ones, and edits made while a save is running go out together in the next one.
+A refresh cannot undo a change that is still saving.
 
 To recover after disk failure, reinstall and reconfigure the same URI. To undo
 an unwanted edit, download a JSON snapshot from `<key>.history/` using your AWS

@@ -6,10 +6,12 @@ import os
 import re
 import subprocess
 import sys
+import time
 import uuid
 import webbrowser
 from collections import defaultdict
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from itertools import groupby
 from pathlib import Path
@@ -31,14 +33,12 @@ from textual.widgets._footer import FooterKey, FooterLabel, KeyGroup
 from status_dashboard import credentials, notifications
 from status_dashboard.clients import github, linear
 from status_dashboard.clients import tasks as sheets
-from status_dashboard.task_store import StoreError
+from status_dashboard.task_store import Rows, StoreError
 from status_dashboard.undo import (
     LinearAssignAction,
     LinearMoveAction,
     LinearSetStateAction,
-    TodoistCompleteAction,
-    TodoistDeferAction,
-    TodoistMoveAction,
+    TaskEditAction,
     UndoStack,
 )
 from status_dashboard.widgets.create_modals import (
@@ -242,6 +242,14 @@ def _get_remote_commit() -> str | None:
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         _logger.warning("Failed to fetch remote commit: %s", e)
         return None
+
+
+@dataclass(eq=False)
+class PendingTaskEdit:
+    """A task edit shown on screen whose save hasn't finished."""
+
+    edit: sheets.Edit
+    on_saved: Callable[[bool], None] | None = None
 
 
 _BindingInfo: TypeAlias = tuple[Binding, bool, str | None]
@@ -678,24 +686,25 @@ class StatusDashboard(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
-        # Task view model: the rows last read from S3 for `_todoist_loaded_date`,
-        # with optimistic changes whose writes haven't finished layered on top.
-        # `_todoist_tasks` is the derived list the table shows; rebuild it with
-        # `_render_todoist_table` rather than editing it directly.
-        self._todoist_server_tasks: list[sheets.Task] = []
+        # Task view model: every stored row as of the last read or save, with
+        # edits that haven't been saved yet applied on top, in order. Edits
+        # are row functions (see `sheets.Edit`), so the same change that is
+        # shown immediately is the one written to S3. `_todoist_tasks` is the
+        # derived list the table shows; rebuild it with `_render_todoist_table`.
+        self._task_rows: Rows | None = None
+        self._task_pending: list[PendingTaskEdit] = []
+        self._task_queue: list[PendingTaskEdit] = []
         self._todoist_tasks: list[sheets.Task] = []
-        self._todoist_loaded_date: date | None = None
-        self._todoist_pending_creates: dict[str, sheets.Task] = {}
-        self._todoist_pending_removals: set[str] = set()
-        self._todoist_order_overlay: dict[str, int] | None = None
-        # Writes are serialized so they reach S3 in the order they were made and
-        # don't race each other's conditional puts. The version counts finished
-        # writes: a read that overlapped one may predate it, so it is retried.
-        self._task_write_lock = asyncio.Lock()
-        self._todoist_write_version = 0
+        # One writer at a time, so saves reach S3 in the order they were made;
+        # edits queued meanwhile go out together in the next save. Each save
+        # returns the stored rows, so reads that overlap a save are dropped
+        # (they may predate it) rather than retried.
+        self._task_writing = False
+        self._task_write_version = 0
         # Reads are numbered so a slow, older read never replaces a newer one.
         self._todoist_read_seq = 0
         self._todoist_applied_seq = 0
+        self._task_warmed_at = 0.0
         dark_mode = _is_macos_dark_mode()
         if dark_mode is not None:
             self.theme = "textual-dark" if dark_mode else "textual-light"
@@ -762,7 +771,6 @@ class StatusDashboard(App[None]):
         _ = self._refresh_review_requests()
         _ = self._refresh_gh_notifications()
         _ = self._refresh_todoist()
-        _ = self._refresh_todoist_projects()
         _ = self._refresh_linear()
 
     @work(exclusive=False)
@@ -797,29 +805,70 @@ class StatusDashboard(App[None]):
             )
             return None
 
-    async def _task_write(
-        self, function: Callable[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> T | None:
-        """Run a task mutation after any earlier ones have finished.
+    def _queue_task_edit(
+        self,
+        edit: sheets.Edit,
+        on_saved: Callable[[bool], None] | None = None,
+    ) -> PendingTaskEdit:
+        """Show `edit` now and save it in the background.
 
-        Callers reconcile their optimistic state immediately after this returns,
-        with no intervening await, so no refresh can observe the bumped version
-        with stale overlay state.
+        `on_saved` is called with whether the save succeeded and the edit found
+        its task. If it didn't, the edit is dropped and the view reverts.
         """
-        async with self._task_write_lock:
-            try:
-                return await self._task_request(function, *args, **kwargs)
-            finally:
-                self._todoist_write_version += 1
-
-    async def _save_task_order(self, orders: dict[str, int]) -> bool | None:
-        return await self._task_write(sheets.update_day_orders, orders)
+        pending = PendingTaskEdit(edit, on_saved)
+        self._task_pending.append(pending)
+        self._task_queue.append(pending)
+        if not self._task_writing:
+            self._task_writing = True
+            _ = self._save_task_edits()
+        return pending
 
     @work(exclusive=False)
-    async def _refresh_todoist_projects(self) -> None:
-        projects = await self._task_request(sheets.get_projects)
-        if projects is not None:
-            self._todoist_projects = projects
+    async def _save_task_edits(self) -> None:
+        """Save queued edits, batching those that queue up while a save runs."""
+        try:
+            while self._task_queue:
+                batch, self._task_queue = self._task_queue, []
+                outcome = await self._task_request(
+                    sheets.save, [pending.edit for pending in batch]
+                )
+                self._task_write_version += 1
+                for pending in batch:
+                    self._task_pending.remove(pending)
+                if outcome is None:
+                    results = [False] * len(batch)
+                    # The save may or may not have landed; show what S3 has.
+                    _ = self._refresh_todoist()
+                else:
+                    results, rows = outcome
+                    self._set_task_rows(rows)
+                self._render_todoist_table()
+                for pending, saved in zip(batch, results):
+                    if pending.on_saved:
+                        pending.on_saved(saved)
+        finally:
+            self._task_writing = False
+
+    def _set_task_rows(self, rows: Rows) -> None:
+        self._task_rows = rows
+        self._todoist_projects = sheets.projects_in(rows)
+
+    def _task_view_rows(self) -> Rows | None:
+        """The stored rows with unsaved edits applied."""
+        if self._task_rows is None or not self._task_pending:
+            return self._task_rows
+        rows = [row.copy() for row in self._task_rows]
+        for pending in self._task_pending:
+            _ = pending.edit(rows)
+        return rows
+
+    def _warm_task_store(self) -> None:
+        """Reconnect to S3 while the user is in the task list, before they act."""
+        now = time.monotonic()
+        if now - self._task_warmed_at < 1:
+            return
+        self._task_warmed_at = now
+        _ = self.run_worker(asyncio.to_thread(sheets.warm), exclusive=False)
 
     @work(exclusive=False)
     async def _refresh_my_prs(self) -> None:
@@ -1055,83 +1104,45 @@ class StatusDashboard(App[None]):
 
     @work(exclusive=False)
     async def _refresh_todoist(self) -> None:
-        selected_date = self._todoist_selected_date
-        while True:
-            write_version = self._todoist_write_version
-            self._todoist_read_seq += 1
-            read_seq = self._todoist_read_seq
-            tasks = await self._task_request(sheets.get_tasks_for_date, selected_date)
-            if tasks is None or selected_date != self._todoist_selected_date:
-                return
-            if read_seq < self._todoist_applied_seq:
-                return
-            if write_version == self._todoist_write_version:
-                break
+        write_version = self._task_write_version
+        self._todoist_read_seq += 1
+        read_seq = self._todoist_read_seq
+        rows = await self._task_request(sheets.load)
+        if rows is None or read_seq < self._todoist_applied_seq:
+            return
+        if self._task_writing or write_version != self._task_write_version:
+            # The read may predate a save, which brings its own fresher rows.
+            return
         self._todoist_applied_seq = read_seq
-        self._todoist_server_tasks = tasks
-        self._todoist_loaded_date = selected_date
-        self._update_todoist_panel_title()
+        self._set_task_rows(rows)
         self._render_todoist_table()
+        if TODOIST_DUE_NOTIFICATIONS and not self._todoist_notify_seeded:
+            _ = self._check_todoist_due_times()
 
     def _derive_todoist_tasks(self) -> list[sheets.Task]:
-        """The loaded rows with pending optimistic changes applied.
-
-        Every overlay is idempotent, so it doesn't matter whether the read
-        already reflects a write that is still in flight.
-        """
-        day = self._todoist_loaded_date
-        if day is None:
+        rows = self._task_view_rows()
+        if rows is None:
             return []
-        tasks = [
-            task
-            for task in self._todoist_server_tasks
-            if task.id not in self._todoist_pending_removals
-        ]
-        present = {task.id for task in tasks}
-        tasks += [
-            task
-            for task_id, task in self._todoist_pending_creates.items()
-            if task_id not in present and sheets.is_due_on(task.due_date, day)
-        ]
-        orders = self._todoist_order_overlay or {}
-        tasks.sort(key=lambda task: orders.get(task.id, task.day_order))
-        return tasks
-
-    def _commit_todoist_orders(self, orders: dict[str, int]) -> None:
-        """Record saved orders in the loaded rows and retire their overlay."""
-        for task in self._todoist_server_tasks:
-            if task.id in orders:
-                task.day_order = orders[task.id]
-        self._todoist_server_tasks.sort(key=lambda task: task.day_order)
-        self._drop_todoist_order_overlay(orders)
-
-    def _drop_todoist_order_overlay(self, orders: dict[str, int]) -> None:
-        # A later reorder replaces the overlay; its own write retires it.
-        if self._todoist_order_overlay is orders:
-            self._todoist_order_overlay = None
-
-    def _set_todoist_order_overlay(self, task_ids: list[str]) -> dict[str, int]:
-        orders = {task_id: index for index, task_id in enumerate(task_ids)}
-        self._todoist_order_overlay = orders
-        return orders
+        return sheets.tasks_due(rows, self._todoist_selected_date)
 
     @work(exclusive=False)
     async def _check_todoist_due_times(self) -> None:
         """Notify when a task due today reaches its due time.
 
-        Fetches today's tasks regardless of the selected date. On the first run,
-        tasks already past their due time are recorded silently so the user isn't
-        spammed about earlier tasks when the app starts. After that, a desktop
-        notification fires once per task as its due time arrives.
+        Uses the rows from the last refresh, whatever day is on screen. On the
+        first run, tasks already past their due time are recorded silently so
+        the user isn't spammed about earlier tasks when the app starts. After
+        that, a desktop notification fires once per task as its due time
+        arrives.
         """
+        rows = self._task_view_rows()
+        if rows is None:
+            return
         today = date.today()
         today_str = today.isoformat()
-        tasks = await self._task_request(sheets.get_tasks_for_date, today)
-        if tasks is None:
-            return
         now = datetime.now()
 
-        for task in tasks:
+        for task in sheets.tasks_due(rows, today):
             if task.due_date != today_str or not task.due_time:
                 continue
 
@@ -1197,9 +1208,7 @@ class StatusDashboard(App[None]):
         self._debounced_refresh_todoist()
 
     def _debounced_refresh_todoist(self) -> None:
-        """Schedule a debounced refresh of Todoist tasks for day navigation."""
-        self._todoist_server_tasks = []
-        self._todoist_loaded_date = None
+        """Show the new day from loaded rows now; refresh once navigation settles."""
         self._render_todoist_table()
         if self._todoist_day_debounce_handle:
             self._todoist_day_debounce_handle.stop()
@@ -1227,7 +1236,7 @@ class StatusDashboard(App[None]):
 
         today = date.today()
         selected = self._todoist_selected_date
-        if self._todoist_loaded_date != selected:
+        if self._task_rows is None:
             _ = table.add_row(
                 "",
                 "",
@@ -1237,7 +1246,7 @@ class StatusDashboard(App[None]):
                 "",
                 "",
                 Text(
-                    "Tasks not loaded for this day — refresh to retry",
+                    "Tasks not loaded — refresh to retry",
                     style="dim italic",
                 ),
             )
@@ -1249,7 +1258,7 @@ class StatusDashboard(App[None]):
             else:
                 empty_msg = f"No tasks on {selected.strftime('%a %b %d')}"
             _ = table.add_row(
-                "", "", "", "", "", "", Text(empty_msg, style="dim italic")
+                "", "", "", "", "", "", "", Text(empty_msg, style="dim italic")
             )
         else:
             today_str = today.isoformat()
@@ -1495,39 +1504,20 @@ class StatusDashboard(App[None]):
             return
 
         self._last_action_undoable = True
-        _ = self._execute_undo(action)
+        if isinstance(action, TaskEditAction):
+            self._undo_task_edit(action)  # shown at once, no worker needed
+        else:
+            _ = self._execute_undo(action)
 
     @work(exclusive=False)
     async def _execute_undo(
         self,
-        action: TodoistCompleteAction
-        | TodoistDeferAction
-        | TodoistMoveAction
-        | LinearSetStateAction
-        | LinearAssignAction
-        | LinearMoveAction,
+        action: LinearSetStateAction | LinearAssignAction | LinearMoveAction,
     ) -> None:
-        """Execute the undo operation for a given action."""
+        """Execute the undo operation for a given Linear action."""
         success = False
 
-        if isinstance(action, TodoistCompleteAction):
-            success = await self._task_write(sheets.reopen_task, action.task_id)
-            if success:
-                _ = self._refresh_todoist()
-
-        elif isinstance(action, TodoistDeferAction):
-            success = await self._task_write(
-                sheets.set_due_date, action.task_id, action.original_due_date
-            )
-            if success:
-                _ = self._refresh_todoist()
-
-        elif isinstance(action, TodoistMoveAction):
-            success = await self._save_task_order(action.ids_to_orders)
-            if success:
-                _ = self._refresh_todoist()
-
-        elif isinstance(action, LinearSetStateAction):
+        if isinstance(action, LinearSetStateAction):
             success = await asyncio.to_thread(
                 linear.set_issue_state_by_name,
                 action.issue_id,
@@ -1555,6 +1545,16 @@ class StatusDashboard(App[None]):
             self.notify(f"Undid: {action.description}")
         else:
             self.notify(f"Failed to undo: {action.description}", severity="error")
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        # Moving through tasks usually precedes acting on one.
+        table = cast(DataTable[str | Text], event.data_table)
+        if table.id == "todoist-table" and table.has_focus:
+            self._warm_task_store()
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        if event.widget.id == "todoist-table":
+            self._warm_task_store()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Handle Enter key on a row - open edit modal for Todoist, browser for others."""
@@ -1595,8 +1595,12 @@ class StatusDashboard(App[None]):
         if focused.id == "todoist-table":
             task = self._selected_todoist_task()
             if task is not None:
-                self._remove_todoist_task_optimistically(task.id)
-                _ = self._do_complete_todoist_task(task.id, task.content)
+                self._edit_tasks(
+                    sheets.complete_edit(task.id),
+                    f"Complete: {task.content[:30]}",
+                    "Task completed!",
+                    "Failed to complete task",
+                )
         elif focused.id == "linear-table":
             if (self._get_selected_row_key(focused) or "").startswith("linear:"):
                 self.action_set_linear_state("done")
@@ -1605,33 +1609,46 @@ class StatusDashboard(App[None]):
                 "Can only complete Todoist tasks or Linear issues", severity="warning"
             )
 
-    def _remove_todoist_task_optimistically(self, task_id: str) -> None:
-        self._todoist_pending_removals.add(task_id)
-        self._render_todoist_table()
+    def _edit_tasks(
+        self,
+        edit: sheets.Edit,
+        description: str,
+        success_message: str | None,
+        failure_message: str,
+    ) -> None:
+        """Apply an undoable edit now, save it in the background, and report.
 
-    def _finish_todoist_removal(self, task_id: str, success: bool) -> None:
-        """Retire a pending removal: drop the task for good, or show it again."""
-        self._todoist_pending_removals.discard(task_id)
-        if success:
-            self._todoist_server_tasks = [
-                task for task in self._todoist_server_tasks if task.id != task_id
-            ]
-        self._render_todoist_table()
-
-    @work(exclusive=False)
-    async def _do_complete_todoist_task(self, task_id: str, task_name: str) -> None:
-        success = await self._task_write(sheets.complete_task, task_id)
-        self._finish_todoist_removal(task_id, bool(success))
-        if success:
-            self._undo_stack.push(
-                TodoistCompleteAction(
-                    task_id=task_id, description=f"Complete: {task_name[:30]}"
-                )
-            )
+        The undo entry exists from the start, so undoing right away works: the
+        reverting edit is saved after this one. A failed save retracts it.
+        """
+        rows = self._task_view_rows()
+        undo = sheets.revert(rows, edit) if rows is not None else None
+        action = TaskEditAction(description=description, edit=undo) if undo else None
+        if action is not None:
+            self._undo_stack.push(action)
             self._last_action_undoable = True
-            self.notify("Task completed!")
-        else:
-            self.notify("Failed to complete task", severity="error")
+
+        def on_saved(saved: bool) -> None:
+            if saved:
+                if success_message:
+                    self.notify(success_message)
+                return
+            if action is not None:
+                self._undo_stack.remove(action)
+            self.notify(failure_message, severity="error")
+
+        _ = self._queue_task_edit(edit, on_saved)
+        self._render_todoist_table()
+
+    def _undo_task_edit(self, action: TaskEditAction) -> None:
+        def on_saved(saved: bool) -> None:
+            if saved:
+                self.notify(f"Undid: {action.description}")
+            else:
+                self.notify(f"Failed to undo: {action.description}", severity="error")
+
+        _ = self._queue_task_edit(action.edit, on_saved)
+        self._render_todoist_table()
 
     def action_defer_task(self) -> None:
         """Defer the selected Todoist task to the next working day."""
@@ -1645,32 +1662,12 @@ class StatusDashboard(App[None]):
 
         task = self._selected_todoist_task()
         if task is not None:
-            self._remove_todoist_task_optimistically(task.id)
-            _ = self._do_defer_todoist_task(task.id, task.content)
-
-    @work(exclusive=False)
-    async def _do_defer_todoist_task(self, task_id: str, task_name: str) -> None:
-        task = await self._task_request(sheets.get_task, task_id)
-        due_raw = task.get("due") if task else None
-        original_due = cast(
-            str | None,
-            cast(dict[str, object], due_raw).get("date") if due_raw else None,
-        )
-
-        success = await self._task_write(sheets.defer_task, task_id)
-        self._finish_todoist_removal(task_id, bool(success))
-        if success:
-            self._undo_stack.push(
-                TodoistDeferAction(
-                    task_id=task_id,
-                    original_due_date=original_due,
-                    description=f"Defer: {task_name[:30]}",
-                )
+            self._edit_tasks(
+                sheets.defer_edit(task.id),
+                f"Defer: {task.content[:30]}",
+                "Task deferred to next working day",
+                "Failed to defer task",
             )
-            self._last_action_undoable = True
-            self.notify("Task deferred to next working day")
-        else:
-            self.notify("Failed to defer task", severity="error")
 
     def action_delete_task(self) -> None:
         """Delete the selected Todoist task."""
@@ -1692,8 +1689,12 @@ class StatusDashboard(App[None]):
 
         def handle_delete_confirmation(confirmed: bool) -> None:
             if confirmed:
-                self._remove_todoist_task_optimistically(task_id)
-                _ = self._do_delete_todoist_task(task_id)
+                self._edit_tasks(
+                    sheets.delete_edit(task_id),
+                    f"Delete: {task.content[:30]}",
+                    "Task deleted",
+                    "Failed to delete task",
+                )
 
         self.push_screen(  # pyright: ignore[reportCallIssue]
             ConfirmationModal(
@@ -1703,15 +1704,6 @@ class StatusDashboard(App[None]):
             ),
             handle_delete_confirmation,  # pyright: ignore[reportArgumentType]
         )
-
-    @work(exclusive=False)
-    async def _do_delete_todoist_task(self, task_id: str) -> None:
-        success = await self._task_write(sheets.delete_task, task_id)
-        self._finish_todoist_removal(task_id, bool(success))
-        if success:
-            self.notify("Task deleted")
-        else:
-            self.notify("Failed to delete task", severity="error")
 
     def action_move_task_down(self) -> None:
         """Move the selected Todoist task down in the Today view."""
@@ -1744,38 +1736,19 @@ class StatusDashboard(App[None]):
             task_ids[target_row],
             task_ids[current_row],
         )
-        _ = self._set_todoist_order_overlay(task_ids)
+        orders = {task_id: index for index, task_id in enumerate(task_ids)}
+
+        def on_saved(saved: bool) -> None:
+            if not saved:
+                self.notify("Failed to save task order", severity="error")
+
+        _ = self._queue_task_edit(sheets.arrange_edit(orders), on_saved)
         self._render_todoist_table(select_key=self._todoist_row_key(task))
         row_region = focused._get_row_region(target_row)  # pyright: ignore[reportPrivateUsage]
         _ = focused.scroll_to_region(row_region, center=True, animate=False)
 
-        self._schedule_todoist_sync()
-
-    def _schedule_todoist_sync(self) -> None:
-        """Schedule a debounced sync of task order to Todoist API."""
-        if self._todoist_debounce_handle:
-            self._todoist_debounce_handle.stop()
-
-        self._todoist_debounce_handle = self.set_timer(0.5, self._flush_todoist_order)
-
-    @work(exclusive=False)
-    async def _flush_todoist_order(self) -> None:
-        """Save the order shown on screen."""
-        self._todoist_debounce_handle = None
-        orders = self._todoist_order_overlay
-        if not orders:
-            return
-
-        success = await self._save_task_order(orders)
-        if success:
-            self._commit_todoist_orders(orders)
-        else:
-            self._drop_todoist_order_overlay(orders)
-            self.notify("Failed to save task order", severity="error")
-        self._render_todoist_table()
-
     def action_reschedule_overdue_to_today(self) -> None:
-        """Reschedule all overdue Todoist tasks to today."""
+        """Reschedule all overdue tasks in the view to today, in one save."""
         focused = self.focused
         if not isinstance(focused, VimDataTable):
             return
@@ -1785,42 +1758,22 @@ class StatusDashboard(App[None]):
             return
 
         today = date.today().isoformat()
-        overdue_tasks = [
-            t for t in self._todoist_tasks if t.due_date and t.due_date < today
+        overdue = [
+            t.id for t in self._todoist_tasks if t.due_date and t.due_date < today
         ]
-
-        if not overdue_tasks:
+        if not overdue:
             self.notify("No overdue tasks to reschedule")
             return
 
-        _ = self._do_reschedule_overdue_to_today(overdue_tasks)
-
-    @work(exclusive=False)
-    async def _do_reschedule_overdue_to_today(self, tasks: list[sheets.Task]) -> None:
-        success_count = 0
-        for task in tasks:
-            success = await self._task_write(
-                sheets.reschedule_to_today,
-                task.id,
-                task.is_recurring,
-                task.due_string,
-            )
-            if success:
-                success_count += 1
-
-        if success_count == len(tasks):
-            self.notify(f"Rescheduled {success_count} task(s) to today")
-        elif success_count > 0:
-            self.notify(
-                f"Rescheduled {success_count}/{len(tasks)} tasks", severity="warning"
-            )
-        else:
-            self.notify("Failed to reschedule tasks", severity="error")
-
-        _ = self._refresh_todoist()
+        self._edit_tasks(
+            sheets.reschedule_to_today_edit(overdue),
+            f"Reschedule {len(overdue)} to today",
+            f"Rescheduled {len(overdue)} task(s) to today",
+            "Failed to reschedule tasks",
+        )
 
     def action_open_task_link(self) -> None:
-        """Open the first link found in the selected Todoist task's description."""
+        """Open the first link in the selected task's title or description."""
         focused = self.focused
         if not isinstance(focused, VimDataTable):
             return
@@ -1829,22 +1782,14 @@ class StatusDashboard(App[None]):
             self.notify("Can only open links from Todoist tasks", severity="warning")
             return
 
-        if focused.row_count == 0:
+        task = self._selected_todoist_task()
+        if task is None:
             return
-
-        cell_key = focused.coordinate_to_cell_key(Coordinate(focused.cursor_row, 0))
-        if not cell_key.row_key or not cell_key.row_key.value:
-            return
-
-        key = str(cell_key.row_key.value)
-
-        if not key.startswith("todoist:"):
-            return
-
-        parts = key.split(":", 2)
-        if len(parts) >= 2:
-            task_id = parts[1]
-            _ = self._do_open_task_link(task_id)
+        url = self._extract_url(task.content) or self._extract_url(task.description)
+        if url:
+            _ = webbrowser.open(url)
+        else:
+            self.notify("No link found in task", severity="warning")
 
     def _extract_url(self, text: str) -> str | None:
         """Extract a URL from text, handling Markdown links like [text](url)."""
@@ -1856,27 +1801,6 @@ class StatusDashboard(App[None]):
         if match:
             return match.group()
         return None
-
-    @work(exclusive=False)
-    async def _do_open_task_link(self, task_id: str) -> None:
-        task = await self._task_request(sheets.get_task, task_id)
-        if not task:
-            self.notify("Failed to fetch task", severity="error")
-            return
-
-        content = cast(str, task.get("content", ""))
-        url = self._extract_url(content)
-        if url:
-            _ = webbrowser.open(url)
-            return
-
-        description = cast(str, task.get("description", ""))
-        url = self._extract_url(description)
-        if url:
-            _ = webbrowser.open(url)
-            return
-
-        self.notify("No link found in task", severity="warning")
 
     def action_set_linear_state(self, state: str) -> None:
         """Set the selected Linear issue's state."""
@@ -2647,69 +2571,38 @@ class StatusDashboard(App[None]):
         )
         now = datetime.now()
         task = sheets.new_task(
-            str(uuid.uuid4()),
-            content,
-            due_string,
-            description,
-            day_order=index,
-            now=now,
+            str(uuid.uuid4()), content, due_string, description, now=now
         )
 
         orders: dict[str, int] | None = None
-        day = self._todoist_loaded_date
-        if day is not None and sheets.is_due_on(task.due_date, day):
+        shown_here = self._task_rows is not None and sheets.is_due_on(
+            task.due_date, self._todoist_selected_date
+        )
+        if shown_here:
             task_ids = [t.id for t in self._todoist_tasks]
             task_ids.insert(index, task.id)
-            orders = self._set_todoist_order_overlay(task_ids)
-            self._todoist_pending_creates[task.id] = task
-            self._render_todoist_table(select_key=self._todoist_row_key(task))
+            orders = {task_id: rank for rank, task_id in enumerate(task_ids)}
 
-        _ = self._do_create_todoist_task(task, due_string, orders, now)
+        def on_saved(saved: bool) -> None:
+            if not saved:
+                self.notify(
+                    "Task save not confirmed; refresh before retrying", severity="error"
+                )
+            elif shown_here:
+                self.notify("Task created!")
+            elif task.due_date:
+                due = date.fromisoformat(task.due_date)
+                self.notify(f"Task created for {due.strftime('%a %b %d')}")
+            else:
+                self.notify("Task created")
 
-    @work(exclusive=False)
-    async def _do_create_todoist_task(
-        self,
-        task: sheets.Task,
-        due_string: str,
-        orders: dict[str, int] | None,
-        now: datetime,
-    ) -> None:
-        created = await self._task_write(
-            sheets.create_task,
-            task.content,
-            due_string,
-            task.description,
-            task_id=task.id,
-            day_orders=orders,
-            now=now,
+        edit = sheets.create_edit(
+            task.id, content, due_string, description, day_orders=orders, now=now
         )
-        _ = self._todoist_pending_creates.pop(task.id, None)
-        if not created:
-            if orders is not None:
-                self._drop_todoist_order_overlay(orders)
-            self._render_todoist_table()
-            self.notify(
-                "Task save not confirmed; refresh before retrying", severity="error"
-            )
-            return
-
-        day = self._todoist_loaded_date
-        if (
-            day is not None
-            and sheets.is_due_on(task.due_date, day)
-            and all(t.id != task.id for t in self._todoist_server_tasks)
-        ):
-            self._todoist_server_tasks.append(task)
-        self._commit_todoist_orders(orders or {})
-        self._render_todoist_table()
-
-        if day is not None and sheets.is_due_on(task.due_date, day):
-            self.notify("Task created!")
-        elif task.due_date:
-            due = date.fromisoformat(task.due_date)
-            self.notify(f"Task created for {due.strftime('%a %b %d')}")
-        else:
-            self.notify("Task created")
+        _ = self._queue_task_edit(edit, on_saved)
+        self._render_todoist_table(
+            select_key=self._todoist_row_key(task) if shown_here else None
+        )
 
     def action_edit_todoist_task(self) -> None:
         """Show modal to edit the selected Todoist task."""
@@ -2806,39 +2699,17 @@ class StatusDashboard(App[None]):
         )
 
     def _handle_todoist_task_edited(self, result: dict[str, str] | None) -> None:
-        """Handle the result from the Todoist task edit modal."""
-        if result and len(result) > 1:
-            task_id = result["task_id"]
-            content = result.get("content")
-            description = result.get("description")
-            project_id = result.get("project_id")
-            due_string = result.get("due_string")
-            _ = self._do_update_todoist_task(
-                task_id, content, description, project_id, due_string
-            )
-
-    @work(exclusive=False)
-    async def _do_update_todoist_task(
-        self,
-        task_id: str,
-        content: str | None,
-        description: str | None,
-        project_id: str | None,
-        due_string: str | None,
-    ) -> None:
-        success = await self._task_write(
-            sheets.update_task,
-            task_id,
-            content=content,
-            description=description,
-            project_id=project_id,
-            due_string=due_string,
+        """Show the edited task at once and save it in the background."""
+        if not result or len(result) <= 1:
+            return
+        edit = sheets.update_edit(
+            result["task_id"],
+            content=result.get("content"),
+            description=result.get("description"),
+            project_id=result.get("project_id"),
+            due_string=result.get("due_string"),
         )
-        if success:
-            self.notify("Task updated!")
-            _ = self._refresh_todoist()
-        else:
-            self.notify("Failed to update task", severity="error")
+        self._edit_tasks(edit, "Edit task", "Task updated!", "Failed to update task")
 
     def action_open_todoist_in_browser(self) -> None:
         """Open the selected Todoist task in the web app."""

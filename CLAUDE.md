@@ -7,7 +7,7 @@ Terminal UI (TUI) dashboard aggregating GitHub PRs, S3-backed tasks, and Linear 
 **Technology Stack:**
 - Python 3.11+ with Textual (TUI framework)
 - httpx for async HTTP (Linear API)
-- AWS CLI subprocess for the shared S3 task document
+- boto3 (one long-lived client) for the shared S3 task document
 - GitHub CLI (`gh`) for GitHub API via subprocess
 
 **Key Design Patterns:**
@@ -15,7 +15,7 @@ Terminal UI (TUI) dashboard aggregating GitHub PRs, S3-backed tasks, and Linear 
 - Vim-style navigation (j/k/g/G, numeric prefixes like 5j)
 - Async operations via `@work(exclusive=False)` to prevent UI blocking
 - Optimistic UI updates with undo stack (15 actions max)
-- Debounced API sync (0.5s) for reordering operations
+- Task edits are row functions applied to the screen at once and saved in the background
 
 ## Project Structure
 
@@ -38,8 +38,8 @@ src/status_dashboard/
 ## Configuration
 
 Environment variables (`.env` or `$XDG_CONFIG_HOME/status-dashboard/.env`):
-- `TASKS_S3_URI` - Required object URI; no default location (AWS CLI owns auth)
-- `TASKS_AWS_REGION`, `TASKS_AWS_CLI` - Optional region and executable overrides
+- `TASKS_S3_URI` - Required object URI; no default location (standard AWS credential chain owns auth)
+- `TASKS_AWS_REGION` - Optional region override
 - `LINEAR_BW_ITEM` - Name of the Bitwarden item holding the Linear key (fetched at startup)
 - `LINEAR_API_KEY` - Optional; set directly to bypass Bitwarden (env var always wins)
 - `LINEAR_PROJECT` - Required (project name to display)
@@ -107,7 +107,7 @@ GitHub and Linear return empty/false values on failure. Task operations raise a
 safe `StoreError`, caught by `StatusDashboard._task_request`: show/log the error,
 retain the last good view on failed reads, and roll back failed optimistic edits.
 Raw AWS errors and object contents must not reach logs. Timeouts: GitHub 30s,
-AWS CLI 40s (whole process), Linear 10s.
+S3 10s connect + 20s read with no automatic retries, Linear 10s.
 
 **GitHub** (`clients/github.py`):
 - Uses `gh api graphql` subprocess for queries
@@ -118,7 +118,9 @@ AWS CLI 40s (whole process), Linear 10s.
   are gated gets `ci_status == AWAITING_APPROVAL`, shown as `pass*`.
 
 **Tasks** (`clients/tasks.py`, `task_store.py`):
-- No Google API calls. The AWS CLI's credential chain owns authentication.
+- No Google API calls. The standard AWS credential chain (env, profile, SSO) owns
+  authentication; botocore is imported lazily, off the UI thread. A sign-in error
+  drops the client so the next request picks up fresh credentials.
 - Shared format: `{"version":1,"rows":[...]}` with nine string cells per row:
   `id, content, project, description, due, recurrence, order, done, completed_at`.
 - `order` is one ranking across all rows, not a position within a day. Reordering a
@@ -126,27 +128,44 @@ AWS CLI 40s (whole process), Linear 10s.
   tasks not shown that day, e.g. completed recurring tasks, keep their relative order.
 - Validate on every read; missing/corrupt documents fail closed. Never auto-initialize
   or substitute an empty list. `task-store` provides explicit create-only initialization/import.
-- Each edit reads data+ETag, writes a unique pre-edit recovery object under
-  `<key>.history/`, then uses `If-Match`. Conflicts re-read and reapply by task ID,
-  up to six attempts with jittered exponential backoff; a failed archive aborts the
-  write. Restore tries once.
+- `task_store.shared_store()` is the process-wide store: one boto3 client (S3 drops
+  idle connections after ~5s; `warm()` reconnects ahead of use, and the app calls it
+  as the cursor moves in the task list) and the last read/written `Snapshot`.
+  Snapshots are shared; never mutate their rows.
+- Each edit starts from the cached version (or reads data+ETag), writes a unique
+  pre-edit recovery object under `<key>.history/`, then uses `If-Match`. A stale
+  cache fails the `If-Match` and the edit is redone on a fresh read (not counted
+  as an attempt); an edit that finds nothing to do on the cache is also re-checked
+  against a fresh read. Conflicts re-read and reapply by task ID, up to six
+  attempts with jittered exponential backoff; a failed archive aborts the write.
+  Reads send `If-None-Match` and reuse the cache on 304. Restore tries once.
 - Uncertain write responses are reconciled with a readback; unresolved outcomes
   explicitly warn to refresh before retrying.
-- The app sends every task write through `StatusDashboard._task_write`, which
-  serializes them, so they reach S3 in order and never race each other's `If-Match`.
-- Task view model: `_todoist_server_tasks` (last applied read) plus pending
-  creates/removals/order overlays; `_render_todoist_table` derives `_todoist_tasks`
-  from them. Overlays are idempotent, so a read that already reflects an in-flight
-  write is harmless. A read that overlapped a finished write is retried, and an
-  older read never replaces a newer one. When a write finishes, commit its effect
-  to the server rows and drop its overlay with no `await` in between.
+- Every mutation is a `tasks.Edit`: a function that changes rows in place and
+  returns whether its task(s) exist (`complete_edit`, `defer_edit`,
+  `reschedule_to_today_edit`, `arrange_edit`, ...). Edits must depend only on their
+  arguments and the rows (capture `now` when building them), because each runs
+  twice: on the rows on screen and on the stored rows when saved.
+- Task view model: `_task_rows` (every stored row, as of the last read or save)
+  plus `_task_pending` (queued/in-flight edits, applied in order on top);
+  `_render_todoist_table` derives `_todoist_tasks` for the selected day. Queue a
+  change with `_queue_task_edit`, or `_edit_tasks` for an undoable one: it pushes a
+  `TaskEditAction` holding `tasks.revert(...)` immediately, and drops it if the
+  save fails.
+- `_save_task_edits` is the single writer: it sends everything queued as one
+  `tasks.save` (one backup + one conditional put), which returns the stored rows,
+  then drops the batch from `_task_pending` with no `await` in between. Because a
+  save returns fresh rows, a read that overlaps a save (in flight or finished
+  meanwhile) is dropped, not retried; an older read never replaces a newer one.
+- Day navigation renders from `_task_rows` immediately, then refreshes once
+  navigation settles. Due-time notifications use the loaded rows too.
 - New tasks get their final ID from the app (`tasks.new_task` previews exactly what
-  `create_task` stores) and are saved together with their position in one write.
+  `create_edit` stores) and are saved together with their position in one write.
   The create/edit modals reject due strings that `dates.parse_due_string` can't parse.
-  On day navigation, clear the prior day's rows and show an unloaded state until
-  the selected day's read succeeds.
 - All location details belong in local config, never source/tests/PR text. Do not
-  commit real task data. Tests use synthetic documents and a fake S3 transport.
+  commit real task data. Tests use synthetic documents and a fake S3 client
+  (`tests/test_task_store.FakeS3`). `scripts/bench_tasks.py` measures key-to-screen
+  and key-to-saved latency against simulated S3 latency.
 - Recurrence still advances locally using `dates.next_occurrence()`; completion
   rolls its due date forward rather than marking a recurring task done.
 - Legacy UI names (`_todoist_*`, `todoist:` row keys, and the `sheets` import alias)

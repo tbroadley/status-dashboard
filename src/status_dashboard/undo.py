@@ -1,4 +1,5 @@
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 
 
 @dataclass
@@ -7,23 +8,16 @@ class UndoAction:
     action_type: str = ""
 
 
-@dataclass
-class TodoistCompleteAction(UndoAction):
-    task_id: str = ""
-    action_type: str = "todoist_complete"
+def _no_edit(_rows: list[list[str]]) -> bool:
+    return False
 
 
 @dataclass
-class TodoistDeferAction(UndoAction):
-    task_id: str = ""
-    original_due_date: str | None = None
-    action_type: str = "todoist_defer"
+class TaskEditAction(UndoAction):
+    """Undo a task change by applying `edit`, which puts back what it changed."""
 
-
-@dataclass
-class TodoistMoveAction(UndoAction):
-    ids_to_orders: dict[str, int] = field(default_factory=dict)
-    action_type: str = "todoist_move"
+    edit: Callable[[list[list[str]]], bool] = _no_edit
+    action_type: str = "task_edit"
 
 
 @dataclass
@@ -69,6 +63,10 @@ class UndoStack:
             _ = self._stack.pop()
             return True
         return False
+
+    def remove(self, action: UndoAction) -> None:
+        """Drop `action` wherever it is in the stack, e.g. when it failed to apply."""
+        self._stack = [entry for entry in self._stack if entry is not action]
 
     def is_empty(self) -> bool:
         return len(self._stack) == 0

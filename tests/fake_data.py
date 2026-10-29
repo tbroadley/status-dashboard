@@ -1,7 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 
 from status_dashboard.clients import github, linear
-from status_dashboard.clients import tasks as sheets
 
 
 def fake_prs() -> list[github.PullRequest]:
@@ -163,65 +162,31 @@ def fake_notifications() -> list[github.Notification]:
     ]
 
 
-def fake_todoist_tasks() -> list[sheets.Task]:
+def fake_task_rows() -> list[list[str]]:
+    """Stored task rows, as `tasks.load` returns them."""
     today = date.today().isoformat()
     yesterday = (date.today() - timedelta(days=1)).isoformat()
+    tasks = [
+        ("t1", "Review Q1 planning document", "", f"{today}T09:00:00"),
+        ("t2", "Write unit tests for auth module", "", today),
+        (
+            "t3",
+            "Respond to Sarah's design feedback",
+            "She left comments on the Figma file",
+            today,
+        ),
+        (
+            "t4",
+            "Update API documentation for v2 endpoints",
+            "",
+            f"{yesterday}T14:00:00",
+        ),
+        ("t5", "Fix broken CI pipeline for staging", "", today),
+        ("t6", "Prepare demo for Friday standup", "", f"{today}T16:30:00"),
+    ]
     return [
-        sheets.Task(
-            id="t1",
-            content="Review Q1 planning document",
-            is_completed=False,
-            url="https://todoist.com/app/task/t1",
-            day_order=1,
-            due_date=today,
-            due_time="09:00",
-            comment_count=2,
-        ),
-        sheets.Task(
-            id="t2",
-            content="Write unit tests for auth module",
-            is_completed=False,
-            url="https://todoist.com/app/task/t2",
-            day_order=2,
-            due_date=today,
-        ),
-        sheets.Task(
-            id="t3",
-            content="Respond to Sarah's design feedback",
-            is_completed=False,
-            url="https://todoist.com/app/task/t3",
-            day_order=3,
-            due_date=today,
-            comment_count=5,
-            description="She left comments on the Figma file",
-        ),
-        sheets.Task(
-            id="t4",
-            content="Update API documentation for v2 endpoints",
-            is_completed=False,
-            url="https://todoist.com/app/task/t4",
-            day_order=4,
-            due_date=yesterday,
-            due_time="14:00",
-        ),
-        sheets.Task(
-            id="t5",
-            content="Fix broken CI pipeline for staging",
-            is_completed=False,
-            url="https://todoist.com/app/task/t5",
-            day_order=5,
-            due_date=today,
-        ),
-        sheets.Task(
-            id="t6",
-            content="Prepare demo for Friday standup",
-            is_completed=False,
-            url="https://todoist.com/app/task/t6",
-            day_order=6,
-            due_date=today,
-            due_time="16:30",
-            comment_count=1,
-        ),
+        [task_id, content, "", description, due, "", str(order), "FALSE", ""]
+        for order, (task_id, content, description, due) in enumerate(tasks, 1)
     ]
 
 

@@ -12,20 +12,13 @@ _ = os.environ.setdefault("LINEAR_PROJECT", "Fake Project")
 from textual.pilot import Pilot  # noqa: E402
 
 from status_dashboard.app import StatusDashboard  # noqa: E402
-from status_dashboard.clients import tasks as sheets  # noqa: E402
 
 TODAY = date.today()
 
 
-def _task(task_id: str, due_time: str | None) -> sheets.Task:
-    return sheets.Task(
-        id=task_id,
-        content=f"Task {task_id}",
-        is_completed=False,
-        url="https://example.com",
-        due_date=TODAY.isoformat(),
-        due_time=due_time,
-    )
+def _task(task_id: str, due_time: str | None) -> list[str]:
+    due = TODAY.isoformat() + (f"T{due_time}:00" if due_time else "")
+    return [task_id, f"Task {task_id}", "", "", due, "", "0", "FALSE", ""]
 
 
 def _at(hour: int, minute: int) -> datetime:
@@ -33,15 +26,12 @@ def _at(hour: int, minute: int) -> datetime:
 
 
 @contextlib.contextmanager
-def _patched(
-    tasks: list[sheets.Task], clock: dict[str, datetime]
-) -> Iterator[MagicMock]:
+def _patched(rows: list[list[str]], clock: dict[str, datetime]) -> Iterator[MagicMock]:
     mock_datetime = MagicMock(wraps=datetime)
     mock_datetime.now = lambda: clock["now"]
     send = MagicMock(return_value=True)
     with (
-        patch("status_dashboard.clients.tasks.get_tasks_for_date", return_value=tasks),
-        patch("status_dashboard.clients.tasks.get_projects", return_value=[]),
+        patch("status_dashboard.clients.tasks.load", return_value=rows),
         patch("status_dashboard.clients.github.get_my_prs", return_value=[]),
         patch("status_dashboard.clients.github.get_review_requests", return_value=[]),
         patch("status_dashboard.clients.github.get_notifications", return_value=[]),

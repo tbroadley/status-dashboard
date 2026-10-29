@@ -1,13 +1,19 @@
 import hashlib
+import io
 import json
 import os
-import subprocess
+import tempfile
+import time
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast, override
 from unittest.mock import patch
 
+from botocore.exceptions import ClientError, NoCredentialsError, ReadTimeoutError
+
+from status_dashboard import task_store
 from status_dashboard.task_store import (
     Conflict,
     StoreError,
@@ -24,13 +30,25 @@ def row(
     return [task_id, content, "", "", due, "", str(order), "FALSE", ""]
 
 
+def client_error(code: str, status: int = 400) -> ClientError:
+    return ClientError(
+        {  # pyright: ignore[reportArgumentType]
+            "Error": {"Code": code, "Message": "private-location secret-detail"},
+            "ResponseMetadata": {"HTTPStatusCode": status},
+        },
+        "Operation",
+    )
+
+
 class FakeS3:
+    """An in-memory stand-in for the boto3 S3 client, with conditional writes."""
+
     def __init__(self, rows: list[list[str]] | None = None):
         self.objects: dict[str, bytes] = (
             {} if rows is None else {"tasks.json": encode_document(rows)}
         )
-        self.commands: list[list[str]] = []
-        self.fail: str | None = None
+        self.calls: list[tuple[str, str, dict[str, object]]] = []
+        self.fail: Exception | None = None
         self.fail_history: bool = False
         self.before_write: Callable[[], None] | None = None
         self.after_write: Callable[[], None] | None = None
@@ -39,45 +57,57 @@ class FakeS3:
     def etag(data: bytes) -> str:
         return '"' + hashlib.sha256(data).hexdigest() + '"'
 
-    def run(
-        self, command: list[str], **_kwargs: object
-    ) -> subprocess.CompletedProcess[bytes]:
-        self.commands.append(command)
-        key = command[command.index("--key") + 1]
+    @contextmanager
+    def installed(self) -> Iterator[Path]:
+        """Serve the shared store; yields where it keeps its local copy."""
+        task_store.reset_shared_store()
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("status_dashboard.task_store.make_client", return_value=self),
+            patch.dict(os.environ, {"XDG_CACHE_HOME": directory}),
+        ):
+            yield task_store.local_copy_path()
+            task_store.reset_shared_store()
+
+    def ops(self) -> list[str]:
+        return [op for op, _key, _kwargs in self.calls]
+
+    def get_object(self, **kwargs: object) -> dict[str, object]:
+        key = str(kwargs["Key"])
+        self.calls.append(("get", key, kwargs))
         if self.fail:
-            return subprocess.CompletedProcess(command, 1, b"", self.fail.encode())
-        if command[2] == "get-object":
-            if key not in self.objects:
-                return subprocess.CompletedProcess(command, 1, b"", b"NoSuchKey")
-            path = Path(command[command.index("--key") + 2])
-            _ = path.write_bytes(self.objects[key])
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                json.dumps({"ETag": self.etag(self.objects[key])}).encode(),
-                b"",
-            )
+            raise self.fail
+        if key not in self.objects:
+            raise client_error("NoSuchKey", 404)
+        data = self.objects[key]
+        if kwargs.get("IfNoneMatch") == self.etag(data):
+            raise client_error("304", 304)
+        return {"Body": io.BytesIO(data), "ETag": self.etag(data)}
+
+    def head_object(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("head", str(kwargs["Key"]), kwargs))
+        return {}
+
+    def put_object(self, **kwargs: object) -> dict[str, object]:
+        key = str(kwargs["Key"])
+        self.calls.append(("put", key, kwargs))
+        if self.fail:
+            raise self.fail
         if self.before_write and key == "tasks.json":
             self.before_write()
         if self.fail_history and ".history/" in key:
-            return subprocess.CompletedProcess(command, 1, b"", b"AccessDenied")
-        if "--if-none-match" in command and key in self.objects:
-            return subprocess.CompletedProcess(command, 1, b"", b"PreconditionFailed")
-        if "--if-match" in command:
-            if (
-                key not in self.objects
-                or self.etag(self.objects[key])
-                != command[command.index("--if-match") + 1]
-            ):
-                return subprocess.CompletedProcess(
-                    command, 1, b"", b"PreconditionFailed"
-                )
-        path = Path(command[command.index("--body") + 1])
-        assert path.stat().st_mode & 0o777 == 0o600
-        self.objects[key] = path.read_bytes()
+            raise client_error("AccessDenied", 403)
+        if kwargs.get("IfNoneMatch") == "*" and key in self.objects:
+            raise client_error("PreconditionFailed", 412)
+        if "IfMatch" in kwargs and (
+            key not in self.objects or self.etag(self.objects[key]) != kwargs["IfMatch"]
+        ):
+            raise client_error("PreconditionFailed", 412)
+        data = cast(bytes, kwargs["Body"])
+        self.objects[key] = data
         if self.after_write and key == "tasks.json":
             self.after_write()
-        return subprocess.CompletedProcess(command, 0, b"{}", b"")
+        return {"ETag": self.etag(data)}
 
 
 class TestTaskStore(unittest.TestCase):
@@ -85,10 +115,7 @@ class TestTaskStore(unittest.TestCase):
 
     @override
     def setUp(self):
-        env = patch.dict(
-            os.environ,
-            {"TASKS_S3_URI": "s3://example-bucket/tasks.json", "TASKS_AWS_CLI": "aws"},
-        )
+        env = patch.dict(os.environ, {"TASKS_S3_URI": "s3://example-bucket/tasks.json"})
         _ = cast(object, self.enterContext(env))
         self.sleeps = []
         _ = cast(
@@ -139,15 +166,60 @@ class TestTaskStore(unittest.TestCase):
     def test_backup_precedes_conditional_write(self):
         fake = FakeS3([row("a")])
         before = fake.objects["tasks.json"]
-        with patch("status_dashboard.task_store.subprocess.run", side_effect=fake.run):
+        with fake.installed():
             self.assertTrue(
                 TaskStore().update(lambda rows: (rows.append(row("b")) or True))
             )
         self.assertEqual(len(decode_document(fake.objects["tasks.json"])), 2)
         history = [data for key, data in fake.objects.items() if ".history/" in key]
         self.assertEqual(history, [before])
-        self.assertIn("--if-none-match", fake.commands[1])
-        self.assertIn("--if-match", fake.commands[2])
+        self.assertEqual(fake.calls[1][2]["IfNoneMatch"], "*")
+        self.assertIn("IfMatch", fake.calls[2][2])
+
+    def test_writes_reuse_the_cached_version(self):
+        fake = FakeS3([row("a")])
+        with fake.installed():
+            store = TaskStore()
+            _ = store.read()
+            written = store.update(lambda rows: (rows.append(row("b")) or True))
+            assert written is not None
+            self.assertEqual([r[0] for r in written.rows], ["a", "b"])
+            _ = store.update(lambda rows: (rows.append(row("c")) or True))
+            # One read, then two (backup, write) pairs with no re-read between.
+            self.assertEqual(fake.ops(), ["get", "put", "put", "put", "put"])
+            # An unchanged document is not downloaded again.
+            self.assertEqual(
+                store.read().rows, decode_document(fake.objects["tasks.json"])
+            )
+            self.assertEqual(fake.ops()[-1], "get")
+            self.assertEqual(len(fake.calls), 6)
+
+    def test_stale_cache_is_corrected_by_conditional_write(self):
+        fake = FakeS3([row("a")])
+        with fake.installed():
+            store = TaskStore()
+            _ = store.read()
+            # Another client adds a task the cached version doesn't have.
+            fake.objects["tasks.json"] = encode_document([row("a"), row("x")])
+            _ = store.update(lambda rows: (rows.append(row("b")) or True))
+            self.assertEqual(
+                [r[0] for r in decode_document(fake.objects["tasks.json"])],
+                ["a", "x", "b"],
+            )
+            self.assertEqual(self.sleeps, [])
+
+            # An edit that finds nothing to do in the stale version checks S3.
+            fake.objects["tasks.json"] = encode_document([row("a"), row("y")])
+
+            def delete_y(rows: list[list[str]]) -> bool:
+                before = len(rows)
+                rows[:] = [r for r in rows if r[0] != "y"]
+                return len(rows) != before
+
+            self.assertIsNotNone(store.update(delete_y))
+            self.assertEqual(
+                [r[0] for r in decode_document(fake.objects["tasks.json"])], ["a"]
+            )
 
     def test_conflict_rereads_preserving_concurrent_edit(self):
         fake = FakeS3([row("a")])
@@ -157,7 +229,7 @@ class TestTaskStore(unittest.TestCase):
             fake.before_write = None
 
         fake.before_write = concurrent_edit
-        with patch("status_dashboard.task_store.subprocess.run", side_effect=fake.run):
+        with fake.installed():
             self.assertTrue(
                 TaskStore().update(lambda rows: (rows.append(row("b")) or True))
             )
@@ -175,10 +247,7 @@ class TestTaskStore(unittest.TestCase):
             fake.objects["tasks.json"] = encode_document([row("a", str(counter))])
 
         fake.before_write = conflict
-        with (
-            patch("status_dashboard.task_store.subprocess.run", side_effect=fake.run),
-            self.assertRaises(Conflict),
-        ):
+        with fake.installed(), self.assertRaises(Conflict):
             _ = TaskStore().update(lambda rows: (rows.append(row("b")) or True))
         self.assertEqual(counter, 6)
         # Each retry waits longer (with jitter) before re-reading.
@@ -189,10 +258,7 @@ class TestTaskStore(unittest.TestCase):
         fake = FakeS3([row("a")])
         before = fake.objects["tasks.json"]
         fake.fail_history = True
-        with (
-            patch("status_dashboard.task_store.subprocess.run", side_effect=fake.run),
-            self.assertRaises(StoreError),
-        ):
+        with fake.installed(), self.assertRaises(StoreError):
             _ = TaskStore().update(lambda rows: (rows.append(row("b")) or True))
         self.assertEqual(fake.objects["tasks.json"], before)
 
@@ -201,25 +267,20 @@ class TestTaskStore(unittest.TestCase):
             fake = FakeS3()
             if data is not None:
                 fake.objects["tasks.json"] = data
-            with (
-                patch(
-                    "status_dashboard.task_store.subprocess.run", side_effect=fake.run
-                ),
-                self.assertRaises(StoreError),
-            ):
+            with fake.installed(), self.assertRaises(StoreError):
                 _ = TaskStore().update(lambda rows: (rows.append(row("a")) or True))
-            self.assertEqual(len(fake.commands), 1)
+            self.assertEqual(len(fake.calls), 1)
         fake = FakeS3([])
-        fake.fail = "AccessDenied private-location secret-detail"
-        with patch("status_dashboard.task_store.subprocess.run", side_effect=fake.run):
-            with self.assertRaises(StoreError) as caught:
-                _ = TaskStore().read()
+        fake.fail = client_error("AccessDenied", 403)
+        with fake.installed(), self.assertRaises(StoreError) as caught:
+            _ = TaskStore().read()
+        self.assertIn("denied", str(caught.exception))
         self.assertNotIn("private-location", str(caught.exception))
         self.assertNotIn("secret-detail", str(caught.exception))
 
     def test_explicit_initialize_cannot_overwrite(self):
         fake = FakeS3()
-        with patch("status_dashboard.task_store.subprocess.run", side_effect=fake.run):
+        with fake.installed():
             TaskStore().initialize([row("a")])
             with self.assertRaises(Conflict):
                 TaskStore().initialize([])
@@ -227,63 +288,135 @@ class TestTaskStore(unittest.TestCase):
 
     def test_noop_needs_no_write(self):
         fake = FakeS3([])
-        with patch("status_dashboard.task_store.subprocess.run", side_effect=fake.run):
+        with fake.installed():
             self.assertTrue(TaskStore().update(lambda _rows: True))
-        self.assertEqual(len(fake.commands), 1)
+        self.assertEqual(len(fake.calls), 1)
 
     def test_lost_write_response_is_reconciled(self):
         fake = FakeS3([row("a")])
 
         def lose_response():
-            raise subprocess.TimeoutExpired("aws", 40)
+            raise ReadTimeoutError(endpoint_url="https://s3")
 
         fake.after_write = lose_response
-        with patch("status_dashboard.task_store.subprocess.run", side_effect=fake.run):
+        with fake.installed():
             self.assertTrue(
                 TaskStore().update(lambda rows: (rows.append(row("b")) or True))
             )
         self.assertEqual(
             [r[0] for r in decode_document(fake.objects["tasks.json"])], ["a", "b"]
         )
-        self.assertEqual(len(fake.commands), 4)
+        self.assertEqual(fake.ops(), ["get", "put", "put", "get"])
 
     def test_unreconciled_write_is_explicitly_unknown(self):
         fake = FakeS3([row("a")])
 
         def disconnect():
-            fake.fail = "connection reset"
-            raise subprocess.TimeoutExpired("aws", 40)
+            fake.fail = ReadTimeoutError(endpoint_url="https://s3")
+            raise ReadTimeoutError(endpoint_url="https://s3")
 
         fake.after_write = disconnect
         with (
-            patch("status_dashboard.task_store.subprocess.run", side_effect=fake.run),
+            fake.installed(),
             self.assertRaisesRegex(StoreError, "Save outcome unknown"),
         ):
             _ = TaskStore().update(lambda rows: (rows.append(row("b")) or True))
-        self.assertEqual(len(fake.commands), 4)
+        self.assertEqual(fake.ops(), ["get", "put", "put", "get"])
 
-    def test_sso_role_denial_is_not_expired_credentials(self):
-        fake = FakeS3([])
-        fake.fail = "AccessDenied for assumed-role/AWSReservedSSO_Example/user"
-        with (
-            patch("status_dashboard.task_store.subprocess.run", side_effect=fake.run),
-            self.assertRaisesRegex(StoreError, "denied"),
-        ):
-            _ = TaskStore().read()
+    def test_expired_credentials_ask_for_sign_in_and_get_a_new_client(self):
+        for error in (client_error("ExpiredToken"), NoCredentialsError()):
+            with self.subTest(error=type(error).__name__):
+                fake = FakeS3([])
+                fake.fail = error
+                with (
+                    patch(
+                        "status_dashboard.task_store.make_client", return_value=fake
+                    ) as make_client,
+                ):
+                    store = TaskStore()
+                    with self.assertRaisesRegex(StoreError, "aws sso login"):
+                        _ = store.read()
+                    fake.fail = None
+                    self.assertEqual(store.read().rows, [])
+                    self.assertEqual(make_client.call_count, 2)
 
-    def test_expired_credentials_and_missing_cli(self):
+    def test_warm_only_reconnects_after_idle(self):
         fake = FakeS3([])
-        fake.fail = "ExpiredToken"
-        with (
-            patch("status_dashboard.task_store.subprocess.run", side_effect=fake.run),
-            self.assertRaisesRegex(StoreError, "aws sso login"),
-        ):
-            _ = TaskStore().read()
-        with (
-            patch(
-                "status_dashboard.task_store.subprocess.run",
-                side_effect=FileNotFoundError,
-            ),
-            self.assertRaisesRegex(StoreError, "AWS CLI not found"),
-        ):
-            _ = TaskStore().read()
+        with fake.installed():
+            store = TaskStore()
+            store.warm()
+            store.warm()
+            self.assertEqual(fake.ops(), ["head"])
+            with patch(
+                "status_dashboard.task_store.time.monotonic",
+                return_value=time.monotonic() + task_store.IDLE_CONNECTION_SECONDS + 1,
+            ):
+                store.warm()
+            self.assertEqual(fake.ops(), ["head", "head"])
+
+    def test_shared_store_follows_configuration(self):
+        task_store.reset_shared_store()
+        first = task_store.shared_store()
+        self.assertIs(task_store.shared_store(), first)
+        with patch.dict(os.environ, {"TASKS_S3_URI": "s3://example-bucket/other.json"}):
+            self.assertIsNot(task_store.shared_store(), first)
+        task_store.reset_shared_store()
+
+
+class TestLocalCopy(unittest.TestCase):
+    @override
+    def setUp(self):
+        env = patch.dict(os.environ, {"TASKS_S3_URI": "s3://example-bucket/tasks.json"})
+        _ = cast(object, self.enterContext(env))
+
+    def test_next_run_starts_from_the_saved_copy(self):
+        fake = FakeS3([row("a")])
+        with fake.installed() as path:
+            _ = task_store.shared_store().read()
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+
+            task_store.reset_shared_store()  # a new run
+            store = task_store.shared_store()
+            cached = store.cached
+            assert cached is not None
+            self.assertEqual(cached.rows, [row("a")])
+            # S3 confirms it with a 304 instead of sending the document again.
+            self.assertEqual(store.read(), cached)
+            self.assertEqual(fake.calls[-1][2]["IfNoneMatch"], cached.etag)
+
+    def test_saves_update_the_copy(self):
+        fake = FakeS3([row("a")])
+        with fake.installed():
+            _ = task_store.shared_store().update(
+                lambda rows: rows.append(row("b")) or True
+            )
+            task_store.reset_shared_store()
+            cached = task_store.shared_store().cached
+            assert cached is not None
+            self.assertEqual([r[0] for r in cached.rows], ["a", "b"])
+
+    def test_stale_copy_never_overrides_s3(self):
+        fake = FakeS3([row("a")])
+        with fake.installed():
+            _ = task_store.shared_store().read()
+            fake.objects["tasks.json"] = encode_document([row("a"), row("x")])
+            task_store.reset_shared_store()
+            store = task_store.shared_store()
+            _ = store.update(lambda rows: rows.append(row("b")) or True)
+            self.assertEqual(
+                [r[0] for r in decode_document(fake.objects["tasks.json"])],
+                ["a", "x", "b"],
+            )
+
+    def test_copy_for_another_list_or_damaged_copy_is_ignored(self):
+        fake = FakeS3([row("a")])
+        with fake.installed() as path:
+            _ = task_store.shared_store().read()
+            with patch.dict(
+                os.environ, {"TASKS_S3_URI": "s3://example-bucket/other.json"}
+            ):
+                self.assertIsNone(task_store.shared_store().cached)
+            _ = path.write_text("{broken")
+            task_store.reset_shared_store()
+            self.assertIsNone(task_store.shared_store().cached)

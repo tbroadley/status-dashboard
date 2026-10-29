@@ -77,6 +77,13 @@ dashboard makes its writes one at a time, so older saves cannot overtake newer
 ones, and edits made while a save is running go out together in the next one.
 A refresh cannot undo a change that is still saving.
 
+The dashboard keeps a private copy of the list (mode 0600) at
+`$XDG_CACHE_HOME/status-dashboard/tasks.json` (default `~/.cache/...`) so it can
+show tasks at startup before S3 answers; the panel title says "saved copy" until
+then. The copy is never trusted over S3: reads still check it with `If-None-Match`,
+and a write based on an out-of-date copy fails `If-Match` and is redone on a
+fresh read. Delete the file to remove the local copy.
+
 To recover after disk failure, reinstall and reconfigure the same URI. To undo
 an unwanted edit, download a JSON snapshot from `<key>.history/` using your AWS
 tools, then run `uv run task-store restore /path/to/snapshot.json --confirm`.

@@ -4,11 +4,13 @@ import datetime as dt
 import json
 import os
 import random
+import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeVar, cast, final
 from urllib.parse import urlsplit
 
@@ -204,9 +206,12 @@ class TaskStore:
     the cached version and only re-read when S3 reports it is stale.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, cache_file: Path | None = None) -> None:
         self.bucket, self.key = parse_uri(os.environ.get("TASKS_S3_URI", ""))
         self.region = os.environ.get("TASKS_AWS_REGION", "")
+        self._cache_file = cache_file
+        self._disk_lock = threading.Lock()
+        self._persisted_etag = ""
         self._client: S3Client | None = None
         self._client_lock = threading.Lock()
         self._write_lock = threading.Lock()
@@ -215,6 +220,7 @@ class TaskStore:
         self._snapshot_stamp = 0
         self._clock = 0
         self._last_request = 0.0
+        self._load_local_copy()
 
     @property
     def config(self) -> tuple[str, str, str]:
@@ -255,8 +261,73 @@ class TaskStore:
         as new as when it finished.
         """
         with self._cache_lock:
-            if stamp >= self._snapshot_stamp:
-                self._snapshot, self._snapshot_stamp = snapshot, stamp
+            if stamp < self._snapshot_stamp:
+                return
+            self._snapshot, self._snapshot_stamp = snapshot, stamp
+        self._save_local_copy()
+
+    @property
+    def uri(self) -> str:
+        return f"s3://{self.bucket}/{self.key}"
+
+    def _load_local_copy(self) -> None:
+        """Start from the copy saved by an earlier run, if it is for this list.
+
+        It is only a starting point: reads still ask S3 (a 304 if unchanged)
+        and a stale copy fails a write's `If-Match`, so it is never trusted
+        over S3.
+        """
+        if self._cache_file is None:
+            return
+        try:
+            raw = cast(object, json.loads(self._cache_file.read_bytes()))
+            if not isinstance(raw, dict):
+                return
+            saved = cast(dict[str, object], raw)
+            etag, document = saved.get("etag"), saved.get("document")
+            if saved.get("uri") != self.uri or not isinstance(etag, str) or not etag:
+                return
+            if not isinstance(document, str):
+                return
+            data = document.encode("utf-8")
+            self._snapshot = Snapshot(decode_document(data), etag, data)
+            self._persisted_etag = etag
+        except (OSError, ValueError, StoreError):
+            return
+
+    def _save_local_copy(self) -> None:
+        """Save the newest known version for the next run (private, atomic)."""
+        if self._cache_file is None:
+            return
+        with self._disk_lock:
+            snapshot = self._snapshot
+            if snapshot is None or snapshot.etag == self._persisted_etag:
+                return
+            payload = json.dumps(
+                {
+                    "version": 1,
+                    "uri": self.uri,
+                    "etag": snapshot.etag,
+                    "document": snapshot.data.decode("utf-8"),
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            directory = self._cache_file.parent
+            try:
+                directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+                descriptor, temporary = tempfile.mkstemp(
+                    dir=directory, prefix=".tasks-"
+                )
+                try:
+                    with os.fdopen(descriptor, "wb") as file:
+                        _ = file.write(payload)
+                    os.replace(temporary, self._cache_file)
+                except BaseException:
+                    Path(temporary).unlink(missing_ok=True)
+                    raise
+                self._persisted_etag = snapshot.etag
+            except OSError:
+                return  # the local copy is a convenience; S3 is the record
 
     @property
     def cached(self) -> Snapshot | None:
@@ -383,13 +454,24 @@ _shared: TaskStore | None = None
 _shared_lock = threading.Lock()
 
 
+def local_copy_path() -> Path:
+    """Where the dashboard keeps its copy of the task list between runs."""
+    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(base) / "status-dashboard" / "tasks.json"
+
+
 def shared_store() -> TaskStore:
-    """The process-wide store, so its connection and cached version are reused."""
+    """The process-wide store, so its connection and cached version are reused.
+
+    It keeps a private local copy of the list, so the next run can show tasks
+    before S3 answers.
+    """
     global _shared
-    store = TaskStore()
+    bucket, key = parse_uri(os.environ.get("TASKS_S3_URI", ""))
+    config = (bucket, key, os.environ.get("TASKS_AWS_REGION", ""))
     with _shared_lock:
-        if _shared is None or _shared.config != store.config:
-            _shared = store
+        if _shared is None or _shared.config != config:
+            _shared = TaskStore(local_copy_path())
         return _shared
 
 

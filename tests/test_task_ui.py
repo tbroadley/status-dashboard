@@ -8,6 +8,9 @@ from datetime import date, timedelta
 from typing import final, override
 from unittest.mock import patch
 
+from textual.widgets import Static
+
+from status_dashboard import task_store
 from status_dashboard.app import StatusDashboard, TodoistDataTable
 from status_dashboard.task_store import decode_document, encode_document
 from tests.test_task_store import FakeS3, client_error
@@ -554,3 +557,26 @@ class TestOptimisticTaskUpdates(TaskUITest):
             # The save returns the merged list, so X shows without a refresh.
             self.assertEqual(self.shown(), ["B", "X"])
             self.assertEqual(sorted(stored(self.s3)), ["a", "b", "x"])
+
+
+class TestSavedCopy(unittest.IsolatedAsyncioTestCase):
+    async def test_startup_shows_saved_copy_until_s3_answers(self):
+        s3 = GatedS3(today_rows("A"))
+        with dashboard_env(s3):
+            _ = task_store.shared_store().read()  # an earlier run saved A
+            s3.set_rows(today_rows("A", "B"))
+            task_store.reset_shared_store()
+            gate = s3.gate("get")
+            app = StatusDashboard()
+            async with app.run_test(size=(120, 55)) as pilot:
+                table = app.query_one("#todoist-table", TodoistDataTable)
+                title = app.query_one("#todoist .panel-title", Static)
+                self.assertEqual(shown(table), ["A"])
+                self.assertIn("saved copy", str(title.render()))
+                refresh = app._refresh_todoist()  # pyright: ignore[reportPrivateUsage]
+                await gate.wait_started()
+                gate.released.set()
+                await refresh.wait()
+                await pilot.pause()
+                self.assertEqual(shown(table), ["A", "B"])
+                self.assertEqual(str(title.render()), "Tasks (Today)")

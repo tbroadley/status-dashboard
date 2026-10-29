@@ -2,10 +2,12 @@ import hashlib
 import io
 import json
 import os
+import tempfile
 import time
 import unittest
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import cast, override
 from unittest.mock import patch
 
@@ -56,11 +58,16 @@ class FakeS3:
         return '"' + hashlib.sha256(data).hexdigest() + '"'
 
     @contextmanager
-    def installed(self) -> Iterator[None]:
+    def installed(self) -> Iterator[Path]:
+        """Serve the shared store; yields where it keeps its local copy."""
         task_store.reset_shared_store()
-        with patch("status_dashboard.task_store.make_client", return_value=self):
-            yield
-        task_store.reset_shared_store()
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("status_dashboard.task_store.make_client", return_value=self),
+            patch.dict(os.environ, {"XDG_CACHE_HOME": directory}),
+        ):
+            yield task_store.local_copy_path()
+            task_store.reset_shared_store()
 
     def ops(self) -> list[str]:
         return [op for op, _key, _kwargs in self.calls]
@@ -354,3 +361,62 @@ class TestTaskStore(unittest.TestCase):
         with patch.dict(os.environ, {"TASKS_S3_URI": "s3://example-bucket/other.json"}):
             self.assertIsNot(task_store.shared_store(), first)
         task_store.reset_shared_store()
+
+
+class TestLocalCopy(unittest.TestCase):
+    @override
+    def setUp(self):
+        env = patch.dict(os.environ, {"TASKS_S3_URI": "s3://example-bucket/tasks.json"})
+        _ = cast(object, self.enterContext(env))
+
+    def test_next_run_starts_from_the_saved_copy(self):
+        fake = FakeS3([row("a")])
+        with fake.installed() as path:
+            _ = task_store.shared_store().read()
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+
+            task_store.reset_shared_store()  # a new run
+            store = task_store.shared_store()
+            cached = store.cached
+            assert cached is not None
+            self.assertEqual(cached.rows, [row("a")])
+            # S3 confirms it with a 304 instead of sending the document again.
+            self.assertEqual(store.read(), cached)
+            self.assertEqual(fake.calls[-1][2]["IfNoneMatch"], cached.etag)
+
+    def test_saves_update_the_copy(self):
+        fake = FakeS3([row("a")])
+        with fake.installed():
+            _ = task_store.shared_store().update(
+                lambda rows: rows.append(row("b")) or True
+            )
+            task_store.reset_shared_store()
+            cached = task_store.shared_store().cached
+            assert cached is not None
+            self.assertEqual([r[0] for r in cached.rows], ["a", "b"])
+
+    def test_stale_copy_never_overrides_s3(self):
+        fake = FakeS3([row("a")])
+        with fake.installed():
+            _ = task_store.shared_store().read()
+            fake.objects["tasks.json"] = encode_document([row("a"), row("x")])
+            task_store.reset_shared_store()
+            store = task_store.shared_store()
+            _ = store.update(lambda rows: rows.append(row("b")) or True)
+            self.assertEqual(
+                [r[0] for r in decode_document(fake.objects["tasks.json"])],
+                ["a", "x", "b"],
+            )
+
+    def test_copy_for_another_list_or_damaged_copy_is_ignored(self):
+        fake = FakeS3([row("a")])
+        with fake.installed() as path:
+            _ = task_store.shared_store().read()
+            with patch.dict(
+                os.environ, {"TASKS_S3_URI": "s3://example-bucket/other.json"}
+            ):
+                self.assertIsNone(task_store.shared_store().cached)
+            _ = path.write_text("{broken")
+            task_store.reset_shared_store()
+            self.assertIsNone(task_store.shared_store().cached)

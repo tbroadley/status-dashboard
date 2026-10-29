@@ -706,6 +706,7 @@ class StatusDashboard(App[None]):
         self._todoist_read_seq = 0
         self._todoist_applied_seq = 0
         self._task_warmed_at = 0.0
+        self._task_rows_fresh = False
         dark_mode = _is_macos_dark_mode()
         if dark_mode is not None:
             self.theme = "textual-dark" if dark_mode else "textual-light"
@@ -758,6 +759,11 @@ class StatusDashboard(App[None]):
         lin = self.query_one("#linear-table", LinearDataTable)
         _ = lin.add_columns("#", "ID", "Title", "Status", "Owner")
         self._setup_table(lin)
+
+        # Show the list saved by the last run while the first read is in flight.
+        if (saved := sheets.saved_rows()) is not None:
+            self._set_task_rows(saved, fresh=False)
+            self._render_todoist_table()
 
         self.refresh_all()
         _ = self.set_interval(60, self.refresh_all)
@@ -850,9 +856,13 @@ class StatusDashboard(App[None]):
         finally:
             self._task_writing = False
 
-    def _set_task_rows(self, rows: Rows) -> None:
+    def _set_task_rows(self, rows: Rows, fresh: bool = True) -> None:
+        """Show `rows`; `fresh` means S3 just returned them, as opposed to a
+        copy saved by an earlier run."""
         self._task_rows = rows
         self._todoist_projects = sheets.projects_in(rows)
+        self._task_rows_fresh = fresh
+        self._update_todoist_panel_title()
 
     def _task_view_rows(self) -> Rows | None:
         """The stored rows with unsaved edits applied."""
@@ -1173,13 +1183,16 @@ class StatusDashboard(App[None]):
         today = date.today()
         selected = self._todoist_selected_date
         if selected == today:
-            title_widget.update("Tasks (Today)")
+            title = "Tasks (Today)"
         elif selected == today - timedelta(days=1):
-            title_widget.update("Tasks (Yesterday)")
+            title = "Tasks (Yesterday)"
         elif selected == today + timedelta(days=1):
-            title_widget.update("Tasks (Tomorrow)")
+            title = "Tasks (Tomorrow)"
         else:
-            title_widget.update(f"Tasks ({selected.strftime('%a %b %d')})")
+            title = f"Tasks ({selected.strftime('%a %b %d')})"
+        if self._task_rows is not None and not self._task_rows_fresh:
+            title += " · saved copy, not yet refreshed"
+        title_widget.update(title)
 
     def action_todoist_previous_day(self) -> None:
         focused = self.focused

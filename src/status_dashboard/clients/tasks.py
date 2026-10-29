@@ -6,7 +6,7 @@ from typing import TypeAlias
 import uuid
 
 from status_dashboard import dates
-from status_dashboard.task_store import Rows, shared_store
+from status_dashboard.task_store import Rows, StoreError, shared_store
 
 JsonDict: TypeAlias = dict[str, object]
 Edit: TypeAlias = Callable[[Rows], bool]
@@ -99,6 +99,19 @@ def get_today_tasks(api_token: str | None = None) -> list[Task]:
 def load() -> Rows:
     """Every stored row, including done tasks. Shared: don't modify it."""
     return shared_store().read().rows
+
+
+def saved_rows() -> Rows | None:
+    """The newest rows known without asking S3, e.g. the copy from the last run.
+
+    Shared: don't modify it. May be out of date; show it only until a read or
+    save returns.
+    """
+    try:
+        snapshot = shared_store().cached
+    except StoreError:
+        return None
+    return snapshot.rows if snapshot else None
 
 
 def warm() -> None:

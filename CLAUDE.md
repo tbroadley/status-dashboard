@@ -134,6 +134,11 @@ S3 10s connect + 20s read with no automatic retries, Linear 10s.
   idle connections after ~5s; `warm()` reconnects ahead of use, and the app calls it
   as the cursor moves in the task list) and the last read/written `Snapshot`.
   Snapshots are shared; never mutate their rows.
+- The shared store also keeps a local copy (`local_copy_path()`, 0600, atomic
+  replace) of the newest version, loaded when the next run starts. The app shows it
+  via `tasks.saved_rows()` with a "saved copy" title until a read or save returns
+  (`_task_rows_fresh`). It only seeds the cache: `If-None-Match`/`If-Match` keep S3
+  authoritative. `FakeS3.installed()` points it at a temp dir.
 - Each edit starts from the cached version (or reads data+ETag), writes a unique
   pre-edit recovery object under `<key>.history/`, then uses `If-Match`. A stale
   cache fails the `If-Match` and the edit is redone on a fresh read (not counted

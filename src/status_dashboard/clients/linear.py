@@ -1,12 +1,42 @@
 import json
 import logging
 import os
+import threading
 from dataclasses import dataclass
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar, cast
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+_client: httpx.Client | None = None
+_client_lock = threading.Lock()
+# Lookups whose answers don't change while the app runs, so each costs one
+# request per session: workflow state IDs per team, the viewer, and the
+# project's team and ID.
+_cache: dict[tuple[str, ...], object] = {}
+T = TypeVar("T")
+
+
+def _cached(key: tuple[str, ...], fetch: Callable[[], T | None]) -> T | None:
+    """`fetch()`, remembered under `key` once it succeeds."""
+    if key in _cache:
+        return cast(T, _cache[key])
+    value = fetch()
+    if value is not None:
+        _cache[key] = value
+    return value
+
+
+def _http() -> httpx.Client:
+    """One client for every request, so connections are reused across calls."""
+    global _client
+    with _client_lock:
+        if _client is None:
+            _client = httpx.Client(timeout=10)
+        return _client
+
 
 _JsonDict = dict[str, Any]  # pyright: ignore[reportExplicitAny]
 _JsonList = list[_JsonDict]
@@ -299,7 +329,7 @@ def get_project_issues(
     project = project_name or os.environ.get("LINEAR_PROJECT", "")
 
     try:
-        response = httpx.post(
+        response = _http().post(
             "https://api.linear.app/graphql",
             json={
                 "query": ISSUES_QUERY,
@@ -371,7 +401,7 @@ def get_my_issues(api_key: str | None = None) -> list[Issue]:
         return []
 
     try:
-        response = httpx.post(
+        response = _http().post(
             "https://api.linear.app/graphql",
             json={"query": MY_ISSUES_QUERY},
             headers={"Authorization": key},
@@ -426,7 +456,7 @@ def _get_team_issues_without_project(
 ) -> list[Issue]:
     """Get Linear issues for a team that have no project assigned."""
     try:
-        response = httpx.post(
+        response = _http().post(
             "https://api.linear.app/graphql",
             json={
                 "query": TEAM_ISSUES_QUERY,
@@ -483,6 +513,30 @@ def _get_team_issues_without_project(
     return issues
 
 
+def _workflow_state_id(team_id: str, state_name: str, key: str) -> str | None:
+    """The ID of the team's workflow state called `state_name` (cached per team)."""
+    cache_key = ("workflow_states", team_id)
+    states = _cache.get(cache_key)
+    if not isinstance(states, dict):
+        response = _http().post(
+            "https://api.linear.app/graphql",
+            json={"query": WORKFLOW_STATES_QUERY, "variables": {"teamId": team_id}},
+            headers={"Authorization": key},
+        )
+        data = _parse_json(response)
+        if "errors" in data:
+            logger.error("Linear API error getting workflow states: %s", data["errors"])  # pyright: ignore[reportAny]
+            return None
+        nodes = _get_list(_get_dict(_get_dict(data, "data"), "workflowStates"), "nodes")
+        states = {_get_str(node, "name"): _get_str(node, "id") for node in nodes}
+        if states:
+            _cache[cache_key] = states
+    state_id = cast(dict[str, str], states).get(state_name)
+    if not state_id:
+        logger.error("State '%s' not found for team %s", state_name, team_id)
+    return state_id
+
+
 def set_issue_state(
     issue_id: str, team_id: str, state_name: str, api_key: str | None = None
 ) -> bool:
@@ -501,38 +555,12 @@ def set_issue_state(
         return False
 
     try:
-        # Get all workflow states for this team
-        response = httpx.post(
-            "https://api.linear.app/graphql",
-            json={
-                "query": WORKFLOW_STATES_QUERY,
-                "variables": {"teamId": team_id},
-            },
-            headers={"Authorization": key},
-            timeout=10,
-        )
-        data = _parse_json(response)
-
-        if "errors" in data:
-            logger.error("Linear API error getting workflow states: %s", data["errors"])  # pyright: ignore[reportAny]
-            return False
-
-        data_payload = _get_dict(data, "data")
-        states = _get_list(_get_dict(data_payload, "workflowStates"), "nodes")
-
-        # Find the target state
-        state_id = None
-        for state in states:
-            if _get_str(state, "name") == target_state:
-                state_id = _get_str(state, "id")
-                break
-
+        state_id = _workflow_state_id(team_id, target_state, key)
         if not state_id:
-            logger.error("State '%s' not found for team %s", target_state, team_id)
             return False
 
         # Update the issue state
-        response = httpx.post(
+        response = _http().post(
             "https://api.linear.app/graphql",
             json={
                 "query": UPDATE_ISSUE_MUTATION,
@@ -569,6 +597,15 @@ def complete_issue(issue_id: str, team_id: str, api_key: str | None = None) -> b
 def get_team_info(
     project_name: str | None = None, api_key: str | None = None
 ) -> tuple[str, str] | None:
+    return _cached(
+        ("team", project_name or "", api_key or ""),
+        lambda: _fetch_team_info(project_name, api_key),
+    )
+
+
+def _fetch_team_info(
+    project_name: str | None = None, api_key: str | None = None
+) -> tuple[str, str] | None:
     """Get the team ID and key for a project. Returns (team_id, team_key) or None on error."""
     key = api_key or os.environ.get("LINEAR_API_KEY")
     if not key:
@@ -578,7 +615,7 @@ def get_team_info(
     project = project_name or os.environ.get("LINEAR_PROJECT", "")
 
     try:
-        response = httpx.post(
+        response = _http().post(
             "https://api.linear.app/graphql",
             json={
                 "query": GET_TEAM_QUERY,
@@ -628,7 +665,7 @@ def get_team_members(api_key: str | None = None) -> list[dict[str, str]]:
         return []
 
     try:
-        response = httpx.post(
+        response = _http().post(
             "https://api.linear.app/graphql",
             json={"query": GET_TEAM_MEMBERS_QUERY},
             headers={"Authorization": key},
@@ -653,13 +690,20 @@ def get_team_members(api_key: str | None = None) -> list[dict[str, str]]:
 
 
 def get_project_id(project_name: str, api_key: str | None = None) -> str | None:
+    return _cached(
+        ("project", project_name, api_key or ""),
+        lambda: _fetch_project_id(project_name, api_key),
+    )
+
+
+def _fetch_project_id(project_name: str, api_key: str | None = None) -> str | None:
     key = api_key or os.environ.get("LINEAR_API_KEY")
     if not key:
         logger.error("LINEAR_API_KEY not set")
         return None
 
     try:
-        response = httpx.post(
+        response = _http().post(
             "https://api.linear.app/graphql",
             json={
                 "query": GET_PROJECT_ID_QUERY,
@@ -718,37 +762,11 @@ def create_issue(
             return False
 
         try:
-            response = httpx.post(
-                "https://api.linear.app/graphql",
-                json={
-                    "query": WORKFLOW_STATES_QUERY,
-                    "variables": {"teamId": team_id},
-                },
-                headers={"Authorization": key},
-                timeout=10,
-            )
-            data = _parse_json(response)
-
-            if "errors" in data:
-                logger.error(
-                    "Linear API error getting workflow states: %s",
-                    data["errors"],  # pyright: ignore[reportAny]
-                )
-                return False
-
-            data_payload = _get_dict(data, "data")
-            states = _get_list(_get_dict(data_payload, "workflowStates"), "nodes")
-            for state in states:
-                if _get_str(state, "name") == target_state:
-                    state_id = _get_str(state, "id")
-                    break
-
-            if not state_id:
-                logger.error("State '%s' not found for team %s", target_state, team_id)
-                return False
-
+            state_id = _workflow_state_id(team_id, target_state, key)
         except httpx.RequestError as e:
             logger.error("Failed to get workflow states: %s", e)
+            return False
+        if not state_id:
             return False
 
     # Create the issue
@@ -764,7 +782,7 @@ def create_issue(
         if project_id:
             variables["projectId"] = project_id
 
-        response = httpx.post(
+        response = _http().post(
             "https://api.linear.app/graphql",
             json={
                 "query": CREATE_ISSUE_MUTATION,
@@ -792,13 +810,17 @@ def create_issue(
 
 
 def get_viewer_id(api_key: str | None = None) -> str | None:
+    return _cached(("viewer", api_key or ""), lambda: _fetch_viewer_id(api_key))
+
+
+def _fetch_viewer_id(api_key: str | None = None) -> str | None:
     key = api_key or os.environ.get("LINEAR_API_KEY")
     if not key:
         logger.error("LINEAR_API_KEY not set")
         return None
 
     try:
-        response = httpx.post(
+        response = _http().post(
             "https://api.linear.app/graphql",
             json={"query": GET_VIEWER_QUERY},
             headers={"Authorization": key},
@@ -829,7 +851,7 @@ def assign_issue(
         return False
 
     try:
-        response = httpx.post(
+        response = _http().post(
             "https://api.linear.app/graphql",
             json={
                 "query": ASSIGN_ISSUE_MUTATION,
@@ -859,7 +881,7 @@ def get_issue(issue_id: str, api_key: str | None = None) -> _JsonDict | None:
         return None
 
     try:
-        response = httpx.post(
+        response = _http().post(
             "https://api.linear.app/graphql",
             json={
                 "query": GET_ISSUE_QUERY,
@@ -905,7 +927,7 @@ def update_sort_order(
         return False
 
     try:
-        response = httpx.post(
+        response = _http().post(
             "https://api.linear.app/graphql",
             json={
                 "query": UPDATE_SORT_ORDER_MUTATION,

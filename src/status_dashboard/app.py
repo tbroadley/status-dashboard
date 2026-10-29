@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import uuid
 import webbrowser
@@ -2904,7 +2905,22 @@ class StatusDashboard(App[None]):
             _ = self._refresh_linear()
 
 
+def _prefetch_tasks() -> None:
+    """Resolve AWS credentials, connect, and read the task list in the background.
+
+    This takes about a second from a cold start and needs nothing from
+    Bitwarden, so it overlaps the vault prompt and app startup. The app's own
+    first read then reuses the open connection and gets a cheap "not modified".
+    Errors are left for that read to report.
+    """
+    try:
+        _ = sheets.load()
+    except Exception:  # noqa: BLE001, S110 - the app's own read reports errors
+        pass
+
+
 def main():
+    threading.Thread(target=_prefetch_tasks, daemon=True).start()
     # Fetch secrets before Textual takes over the terminal, so Bitwarden can
     # prompt for the master password if the vault is locked.
     credentials.load_into_env()

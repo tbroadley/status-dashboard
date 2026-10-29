@@ -118,6 +118,8 @@ S3 10s connect + 20s read with no automatic retries, Linear 10s.
   are gated gets `ci_status == AWAITING_APPROVAL`, shown as `pass*`.
 
 **Tasks** (`clients/tasks.py`, `task_store.py`):
+- `main()` starts a background read (`_prefetch_tasks`) before the Bitwarden step,
+  so credential resolution and the TLS handshake overlap startup.
 - No Google API calls. The standard AWS credential chain (env, profile, SSO) owns
   authentication; botocore is imported lazily, off the UI thread. A sign-in error
   drops the client so the next request picks up fresh credentials.
@@ -172,7 +174,9 @@ S3 10s connect + 20s read with no automatic retries, Linear 10s.
   are cosmetic; task persistence is exclusively S3. See README for setup/recovery.
 
 **Linear** (`clients/linear.py`):
-- GraphQL API via httpx
+- GraphQL API via one shared `httpx.Client` (`_http()`), so connections are reused
+- Answers that don't change during a session are cached in `_cache` once they
+  succeed: workflow state IDs per team, the viewer ID, the project's team and ID
 - Functions: `get_project_issues()`, `set_issue_state()`, `create_issue()`, `assign_issue()`, `update_sort_order()`
 - State mapping in `STATE_NAME_MAP`
 

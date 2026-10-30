@@ -31,10 +31,10 @@ from textual.timer import Timer  # used for cast of debounce handles
 from textual.widgets import DataTable, Footer as TextualFooter, Static
 from textual.widgets._footer import FooterKey, FooterLabel, KeyGroup
 
-from status_dashboard import credentials, notifications
+from status_dashboard import aws_login, credentials, notifications
 from status_dashboard.clients import github, linear
 from status_dashboard.clients import tasks as sheets
-from status_dashboard.task_store import Rows, StoreError
+from status_dashboard.task_store import Rows, SignInRequired, StoreError
 from status_dashboard.undo import (
     LinearAssignAction,
     LinearMoveAction,
@@ -707,6 +707,9 @@ class StatusDashboard(App[None]):
         self._todoist_applied_seq = 0
         self._task_warmed_at = 0.0
         self._task_rows_fresh = False
+        # One `aws sso login` at a time, shared by every request waiting on it.
+        self._aws_login: asyncio.Task[bool] | None = None
+        self._aws_login_failed_at: float | None = None
         dark_mode = _is_macos_dark_mode()
         if dark_mode is not None:
             self.theme = "textual-dark" if dark_mode else "textual-light"
@@ -799,7 +802,13 @@ class StatusDashboard(App[None]):
         self, function: Callable[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T | None:
         try:
-            return await asyncio.to_thread(function, *args, **kwargs)
+            try:
+                return await asyncio.to_thread(function, *args, **kwargs)
+            except SignInRequired:
+                if not await self._aws_sign_in():
+                    raise
+                # The request failed before reaching S3, so it is safe to repeat.
+                return await asyncio.to_thread(function, *args, **kwargs)
         except (StoreError, OSError) as error:
             message = (
                 str(error)
@@ -811,6 +820,42 @@ class StatusDashboard(App[None]):
                 message, title="Task storage unavailable", severity="error", timeout=10
             )
             return None
+
+    async def _aws_sign_in(self) -> bool:
+        """Run `aws sso login`, or join the one already running.
+
+        Returns whether it succeeded. After a failed or ignored sign-in, no
+        new one starts for a while, so the browser isn't opened repeatedly.
+        """
+        if self._aws_login is None:
+            if not aws_login.enabled():
+                return False
+            failed_at = self._aws_login_failed_at
+            if (
+                failed_at is not None
+                and time.monotonic() - failed_at < aws_login.RETRY_AFTER_SECONDS
+            ):
+                return False
+            self._aws_login = asyncio.create_task(self._run_aws_login())
+        return await asyncio.shield(self._aws_login)
+
+    async def _run_aws_login(self) -> bool:
+        try:
+            self.notify(
+                "Running `aws sso login`; approve it in your browser.",
+                title="AWS sign-in expired",
+                timeout=10,
+            )
+            _ = await asyncio.to_thread(
+                notifications.send_desktop_notification,
+                "Status Dashboard",
+                "AWS sign-in expired. Running aws sso login; approve it in your browser.",
+            )
+            signed_in = await aws_login.sso_login()
+            self._aws_login_failed_at = None if signed_in else time.monotonic()
+            return signed_in
+        finally:
+            self._aws_login = None
 
     def _queue_task_edit(
         self,

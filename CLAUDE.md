@@ -47,6 +47,7 @@ Environment variables (`.env` or `$XDG_CONFIG_HOME/status-dashboard/.env`):
 - `GITHUB_ORG` - Optional single organization (deprecated, use `GITHUB_ORGS`; defaults to METR)
 - `GITHUB_EXTRA_PR_REPOS` - Optional comma-separated list of extra repos to show authored or assigned PRs from (defaults to `ukgovernmentbeis/inspect_ai,meridianlabs-ai/inspect_scout`)
 - `HIDDEN_REVIEW_REQUESTS` - Optional JSON array of [repo, pr_number]
+- `AWS_AUTO_SSO_LOGIN` - Optional, run `aws sso login` automatically when task storage reports expired AWS credentials (default on; set to `false`/`0`/`off` to disable)
 - `TODOIST_DUE_NOTIFICATIONS` - Optional, enables desktop notifications when a task's due time arrives (default on; set to `false`/`0`/`off` to disable). Name retained for backwards compatibility.
 
 App-managed state (not env vars):
@@ -122,7 +123,10 @@ S3 10s connect + 20s read with no automatic retries, Linear 10s.
   so credential resolution and the TLS handshake overlap startup.
 - No Google API calls. The standard AWS credential chain (env, profile, SSO) owns
   authentication; botocore is imported lazily, off the UI thread. A sign-in error
-  drops the client so the next request picks up fresh credentials.
+  (`SignInRequired`) drops the client so the next request picks up fresh credentials.
+- On `SignInRequired`, `_task_request` runs `aws sso login` (`aws_login.py`) with a
+  silent desktop notification, then repeats the request once. Concurrent requests
+  share one login; after a failed or ignored login none starts for 15 minutes.
 - Shared format: `{"version":1,"rows":[...]}` with nine string cells per row:
   `id, content, project, description, due, recurrence, order, done, completed_at`.
 - `order` is one ranking across all rows, not a position within a day. Reordering a

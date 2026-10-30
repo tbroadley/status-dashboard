@@ -48,6 +48,13 @@ class RequestFailed(StoreError):
     pass
 
 
+class SignInRequired(StoreError):
+    """AWS credentials are missing or expired; `aws sso login` fixes it."""
+
+    def __init__(self) -> None:
+        super().__init__("AWS sign-in required; run `aws sso login` and retry.")
+
+
 def decode_document(data: bytes) -> Rows:
     try:
         raw = cast(object, json.loads(data))
@@ -164,7 +171,7 @@ def _translate(error: Exception) -> Exception:
         ):
             return Conflict("The task list changed concurrently; refresh and retry.")
         if code in _SIGN_IN_CODES:
-            return StoreError("AWS sign-in required; run `aws sso login` and retry.")
+            return SignInRequired()
         if code in ("NoSuchKey", "404") or status == 404:
             return StoreError(
                 "Task document missing; explicitly initialize or import it with task-store."
@@ -188,7 +195,7 @@ def _translate(error: Exception) -> Exception:
             boto.SSOTokenLoadError,
         ),
     ):
-        return StoreError("AWS sign-in required; run `aws sso login` and retry.")
+        return SignInRequired()
     if isinstance(error, boto.ProfileNotFound):
         return StoreError("AWS profile not found; check your AWS configuration.")
     return RequestFailed(
@@ -241,7 +248,7 @@ class TaskStore:
             return request(client)
         except Exception as error:  # noqa: BLE001 - botocore raises many types
             translated = _translate(error)
-            if isinstance(translated, StoreError) and "sign-in" in str(translated):
+            if isinstance(translated, SignInRequired):
                 # Pick up fresh credentials (e.g. after `aws sso login`) next time.
                 with self._client_lock:
                     self._client = None

@@ -248,8 +248,55 @@ class GetReviewRequestsTests(unittest.TestCase):
 
 
 class GetNotificationsTests(unittest.TestCase):
-    def test_includes_review_requested_and_comment_notifications(self) -> None:
-        for reason in ("review_requested", "comment"):
+    def test_activity_lookup_failure_hides_only_review_requests(self) -> None:
+        with (
+            patch.object(
+                github,
+                "_run_gh_api",
+                return_value=[_make_notification("review_requested")],
+            ),
+            patch.object(github, "_run_gh_graphql", return_value=None),
+        ):
+            self.assertEqual(github.get_notifications(["acme"]), [])
+
+    def test_fetches_activity_in_batches(self) -> None:
+        count = github._PR_ACTIVITY_BATCH_SIZE * 2 + 1  # pyright: ignore[reportPrivateUsage]
+        items = [_make_notification("review_requested") for _ in range(count)]
+        for number, item in enumerate(items, start=1):
+            subject = cast(dict[str, str], item["subject"])
+            subject["url"] = f"https://api.github.com/repos/acme/repo/pulls/{number}"
+        open_direct: dict[str, object] = {
+            "state": "OPEN",
+            "reviewRequests": {"nodes": [{"requestedReviewer": {"isViewer": True}}]},
+            "comments": {"nodes": []},
+            "reviews": {"nodes": []},
+        }
+
+        def run_graphql(query: str) -> dict[str, object] | None:
+            # The batch holding PR 1 fails; the others succeed.
+            if "pullRequest(number: 1)" in query:
+                return None
+            size = query.count("pullRequest(number:")
+            return {
+                "data": {f"pr{i}": {"pullRequest": open_direct} for i in range(size)}
+            }
+
+        with (
+            patch.object(github, "_run_gh_api", return_value=items),
+            patch.object(github, "_run_gh_graphql", side_effect=run_graphql) as graphql,
+        ):
+            notifications = github.get_notifications(["acme"])
+
+        self.assertEqual(graphql.call_count, 3)
+        self.assertEqual(
+            [n.pr_number for n in notifications],
+            list(range(github._PR_ACTIVITY_BATCH_SIZE + 1, count + 1)),  # pyright: ignore[reportPrivateUsage]
+        )
+
+    def test_includes_comment_notifications_when_activity_lookup_fails(
+        self,
+    ) -> None:
+        for reason in ("comment", "mention"):
             with self.subTest(reason=reason):
                 with (
                     patch.object(

@@ -863,15 +863,36 @@ _PR_ACTIVITY_FIELDS = """
 """
 
 
+# PRs per activity request. One request for a full page of notifications can
+# exceed the gh timeout; smaller batches, run concurrently, rarely do, and a
+# batch that fails only loses its own PRs.
+_PR_ACTIVITY_BATCH_SIZE = 10
+
+
 def _get_pr_activity(
     prs: list[tuple[str, int]],
 ) -> dict[tuple[str, int], _PRActivity]:
-    """Fetch state and latest human activity for PRs in one GraphQL request.
+    """Fetch state and latest human activity for PRs, in concurrent batches.
 
-    Keys are (lowercased repo, number). Returns an empty dict on failure.
+    Keys are (lowercased repo, number). PRs in a batch that fails are missing.
     """
-    if not prs:
+    batches = [
+        prs[i : i + _PR_ACTIVITY_BATCH_SIZE]
+        for i in range(0, len(prs), _PR_ACTIVITY_BATCH_SIZE)
+    ]
+    if not batches:
         return {}
+    activity: dict[tuple[str, int], _PRActivity] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(batches)) as pool:
+        for batch_activity in pool.map(_get_pr_activity_batch, batches):
+            activity.update(batch_activity)
+    return activity
+
+
+def _get_pr_activity_batch(
+    prs: list[tuple[str, int]],
+) -> dict[tuple[str, int], _PRActivity]:
+    """Fetch activity for PRs in one GraphQL request. Empty on failure."""
 
     parts: list[str] = []
     for i, (repo, number) in enumerate(prs):
@@ -934,9 +955,13 @@ def _is_settled(notification: Notification, activity: _PRActivity | None) -> boo
     never named me directly (e.g. only a team I'm in) on PRs I haven't taken
     part in; and for PRs where my latest review or comment is newer than any
     human activity by others.
+
+    Review requests whose activity couldn't be fetched count as settled: most
+    are team-only, and direct ones still appear in Review Requests, which has
+    its own query. Other notifications are kept.
     """
     if activity is None:
-        return False
+        return notification.reason == "review_requested"
     if notification.reason == "review_requested":
         if activity.state in ("MERGED", "CLOSED"):
             return True

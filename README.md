@@ -22,8 +22,11 @@ A terminal dashboard for tracking PRs, tasks stored in S3, and Linear issues.
    | `GITHUB_ORG` | No | Single GitHub organization (deprecated, use `GITHUB_ORGS` instead) |
    | `GITHUB_EXTRA_PR_REPOS` | No | Comma-separated list of extra repos to show authored or assigned PRs from (e.g., `owner/repo1,owner/repo2`) |
    | `HIDDEN_REVIEW_REQUESTS` | No | JSON array of `[repo, pr_number]` pairs to hide from review requests |
+   | `AWS_AUTO_SSO_LOGIN` | No | Run `aws sso login` automatically when AWS credentials expire (default on; `false` to disable) |
 
-3. Make AWS credentials available through the standard chain (for SSO: `aws sso login`), then install and run:
+3. Make AWS credentials available through the standard chain (for SSO: `aws sso login`), then install and run.
+   When an SSO session expires, the dashboard runs `aws sso login` itself and posts a
+   silent desktop notification; approve the sign-in in the browser and the request is retried:
    ```bash
    uv sync
    uv run status-dashboard

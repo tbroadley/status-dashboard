@@ -580,3 +580,75 @@ class TestSavedCopy(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertEqual(shown(table), ["A", "B"])
                 self.assertEqual(str(title.render()), "Tasks (Today)")
+
+
+class TestAwsSignIn(TaskUITest):
+    """Expired AWS credentials trigger one `aws sso login`, then a retry."""
+
+    @contextlib.contextmanager
+    def sso_login(self, succeeds: bool) -> Iterator[list[int]]:
+        calls: list[int] = []
+
+        async def fake_login() -> bool:
+            calls.append(1)
+            await asyncio.sleep(0.05)  # concurrent requests join this login
+            if succeeds:
+                self.s3.fail = None
+            return succeeds
+
+        with (
+            patch("status_dashboard.app.aws_login.sso_login", fake_login),
+            patch(
+                "status_dashboard.app.notifications.send_desktop_notification"
+            ) as desktop,
+        ):
+            yield calls
+        if calls:
+            desktop.assert_called_once()
+            self.assertEqual(len(desktop.call_args.args), 2, "should be silent")
+
+    async def test_expired_credentials_sign_in_and_retry_the_save(self):
+        async with self.running(today_rows("A", "B")) as pilot:
+            self.s3.fail = client_error("ExpiredToken")
+            with (
+                self.sso_login(succeeds=True) as logins,
+                patch.object(self.app, "notify") as notify,
+            ):
+                await pilot.press("c")
+                refresh = self.app._refresh_todoist()  # pyright: ignore[reportPrivateUsage]
+                await refresh.wait()
+                await self.settle()
+            self.assertEqual(logins, [1])
+            self.assertEqual(self.shown(), ["B"])
+            self.assertEqual(stored(self.s3)["a"][7], "TRUE")
+            titles = [c.kwargs.get("title") for c in notify.call_args_list]
+            self.assertIn("AWS sign-in expired", titles)
+            self.assertNotIn("Task storage unavailable", titles)
+
+    async def test_failed_sign_in_reports_error_and_is_not_retried_at_once(self):
+        async with self.running(today_rows("A")) as pilot:
+            self.s3.fail = client_error("ExpiredToken")
+            with (
+                self.sso_login(succeeds=False) as logins,
+                patch.object(self.app, "notify") as notify,
+            ):
+                await pilot.press("c")
+                await self.settle()
+                self.assertEqual(self.shown(), ["A"])
+                await self.refresh()
+            self.assertEqual(logins, [1])
+            titles = [c.kwargs.get("title") for c in notify.call_args_list]
+            self.assertIn("Task storage unavailable", titles)
+            self.assertEqual(titles.count("AWS sign-in expired"), 1)
+            self.s3.fail = None
+
+    async def test_disabled_auto_sign_in_only_reports_the_error(self):
+        async with self.running(today_rows("A")):
+            self.s3.fail = client_error("ExpiredToken")
+            with (
+                patch.dict(os.environ, {"AWS_AUTO_SSO_LOGIN": "false"}),
+                self.sso_login(succeeds=True) as logins,
+            ):
+                await self.refresh()
+            self.assertEqual(logins, [])
+            self.s3.fail = None

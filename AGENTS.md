@@ -50,6 +50,7 @@ Optional:
 - `GITHUB_ORG` (single org, deprecated; defaults to `METR`)
 - `GITHUB_EXTRA_PR_REPOS` (comma-separated extra repos for My PRs, defaults to `ukgovernmentbeis/inspect_ai,meridianlabs-ai/inspect_scout`)
 - `HIDDEN_REVIEW_REQUESTS` (JSON array)
+- `AWS_AUTO_SSO_LOGIN` (default on; runs `aws sso login` when AWS credentials expire)
 
 ## Logging
 

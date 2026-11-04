@@ -173,8 +173,6 @@ def _setup_logging() -> None:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
-_setup_logging()
-
 _logger = logging.getLogger(__name__)
 
 
@@ -3032,6 +3030,9 @@ def _prefetch_tasks() -> None:
 
 
 def main():
+    # Here rather than at import, so tests importing the app don't write to
+    # the user's log file.
+    _setup_logging()
     threading.Thread(target=_prefetch_tasks, daemon=True).start()
     # Fetch secrets before Textual takes over the terminal, so Bitwarden can
     # prompt for the master password if the vault is locked.

@@ -39,6 +39,7 @@ from status_dashboard.undo import (
     LinearAssignAction,
     LinearMoveAction,
     LinearSetStateAction,
+    RemoveReviewerAction,
     TaskEditAction,
     UndoStack,
 )
@@ -1565,6 +1566,8 @@ class StatusDashboard(App[None]):
         self._last_action_undoable = True
         if isinstance(action, TaskEditAction):
             self._undo_task_edit(action)  # shown at once, no worker needed
+        elif isinstance(action, RemoveReviewerAction):
+            _ = self._undo_remove_self_as_reviewer(action)
         else:
             _ = self._execute_undo(action)
 
@@ -2193,14 +2196,16 @@ class StatusDashboard(App[None]):
                     if review_to_remove is not None and review_index >= 0:
                         _ = self._review_requests.pop(review_index)
                     self._render_review_requests_table()
-                    self._last_action_undoable = False
-                    _ = self._do_remove_self_as_reviewer(
-                        repo,
-                        pr_number,
-                        review_to_remove,
-                        review_index,
-                        removed_notifications,
+                    action = RemoveReviewerAction(
+                        description=f"Remove self from {repo} PR #{pr_number}",
+                        repo=repo,
+                        pr_number=pr_number,
+                        review=review_to_remove,
+                        index=review_index,
                     )
+                    self._undo_stack.push(action)
+                    self._last_action_undoable = True
+                    _ = self._do_remove_self_as_reviewer(action, removed_notifications)
 
             self.push_screen(  # pyright: ignore[reportCallIssue]
                 ConfirmationModal(
@@ -2216,35 +2221,84 @@ class StatusDashboard(App[None]):
     @work(exclusive=False)
     async def _do_remove_self_as_reviewer(
         self,
-        repo: str,
-        pr_number: int,
-        removed_review: github.ReviewRequest | None,
-        removed_index: int,
+        action: RemoveReviewerAction,
         removed_notifications: list[github.Notification],
     ) -> None:
-        success = await asyncio.to_thread(
-            github.remove_self_as_reviewer, repo, pr_number
-        )
-        if success:
+        repo, pr_number = action.repo, action.pr_number
+        unsubscribed = False
+        try:
+            action.removed = await asyncio.to_thread(
+                github.remove_self_as_reviewer, repo, pr_number
+            )
+            if not action.removed:
+                self._undo_stack.remove(action)
+                # Rollback: restore the review request to its original position
+                if action.review is not None and action.index >= 0:
+                    self._review_requests.insert(action.index, action.review)
+                self._gh_notifications.extend(removed_notifications)
+                self._render_review_requests_table()
+                self.notify("Failed to remove self as reviewer", severity="error")
+                return
             unsubscribed = await asyncio.to_thread(
                 github.unsubscribe_from_pr, repo, pr_number
             )
-            if unsubscribed:
-                self.notify(f"Removed from PR #{pr_number} and unsubscribed")
-            else:
-                self.notify(
-                    f"Removed from PR #{pr_number}, but failed to unsubscribe",
-                    severity="warning",
-                )
-            for notif in removed_notifications:
-                _ = await asyncio.to_thread(github.mark_notification_read, notif.id)
+        finally:
+            action.done.set()
+        if unsubscribed:
+            self.notify(f"Removed from PR #{pr_number} and unsubscribed")
         else:
-            # Rollback: restore the review request to its original position
-            if removed_review is not None and removed_index >= 0:
-                self._review_requests.insert(removed_index, removed_review)
-            self._gh_notifications.extend(removed_notifications)
+            self.notify(
+                f"Removed from PR #{pr_number}, but failed to unsubscribe",
+                severity="warning",
+            )
+        for notif in removed_notifications:
+            _ = await asyncio.to_thread(github.mark_notification_read, notif.id)
+
+    @work(exclusive=False)
+    async def _undo_remove_self_as_reviewer(self, action: RemoveReviewerAction) -> None:
+        """Request yourself as reviewer again and resubscribe.
+
+        The PR's notifications stay read: GitHub can't mark them unread, and
+        the restored review request covers them anyway.
+        """
+        _ = await action.done.wait()
+        if not action.removed:
+            return  # the removal failed and was already rolled back
+
+        def is_this_pr(r: github.ReviewRequest) -> bool:
+            return r.repository == action.repo and r.number == action.pr_number
+
+        restored = action.review is not None and not any(
+            is_this_pr(r) for r in self._review_requests
+        )
+        if restored and action.review is not None:
+            index = min(max(action.index, 0), len(self._review_requests))
+            self._review_requests.insert(index, action.review)
             self._render_review_requests_table()
-            self.notify("Failed to remove self as reviewer", severity="error")
+
+        requested = await asyncio.to_thread(
+            github.request_self_as_reviewer, action.repo, action.pr_number
+        )
+        if not requested:
+            if restored:
+                self._review_requests = [
+                    r for r in self._review_requests if not is_this_pr(r)
+                ]
+                self._render_review_requests_table()
+            self.notify(f"Failed to undo: {action.description}", severity="error")
+            return
+
+        subscribed = await asyncio.to_thread(
+            github.subscribe_to_pr, action.repo, action.pr_number
+        )
+        if subscribed:
+            self.notify(f"Undid: {action.description}")
+        else:
+            self.notify(
+                f"Re-requested review on PR #{action.pr_number}, "
+                + "but failed to resubscribe",
+                severity="warning",
+            )
 
     def action_merge_pr(self) -> None:
         """Squash merge the selected approved PR."""

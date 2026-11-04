@@ -616,16 +616,57 @@ def remove_self_as_reviewer(repo: str, pr_number: int) -> bool:
     return True
 
 
-def unsubscribe_from_pr(repo: str, pr_number: int) -> bool:
-    """Unsubscribe the current user from a PR's notifications.
+def request_self_as_reviewer(repo: str, pr_number: int) -> bool:
+    """Request a review from the current user on a PR, undoing `remove_self_as_reviewer`.
 
     Args:
         repo: Repository in 'owner/name' format
         pr_number: PR number
 
     Returns:
-        True if successful, False otherwise
+        True if the user is a requested reviewer afterwards, False otherwise
     """
+    login = get_my_username()
+    if not login:
+        return False
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "api",
+                "-X",
+                "POST",
+                f"repos/{repo}/pulls/{pr_number}/requested_reviewers",
+                "-f",
+                f"reviewers[]={login}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT,
+        )
+        if result.returncode != 0:
+            logger.warning("Failed to request reviewer: %s", result.stderr.strip())
+            return False
+        pr: _JsonDict = json.loads(result.stdout)  # pyright: ignore[reportAny]
+    except subprocess.TimeoutExpired:
+        logger.error("gh command timed out after %d seconds", SUBPROCESS_TIMEOUT)
+        return False
+    except json.JSONDecodeError as e:
+        logger.error("Failed to parse gh output: %s", e)
+        return False
+    except FileNotFoundError:
+        logger.error("gh CLI not found. Install it from https://cli.github.com/")
+        return False
+    requested = {
+        _get_str(r, "login").lower() for r in _get_list(pr, "requested_reviewers")
+    }
+    if login.lower() not in requested:
+        logger.warning("Not a requested reviewer on %s#%d", repo, pr_number)
+        return False
+    return True
+
+
+def _set_pr_subscription(repo: str, pr_number: int, state: str) -> bool:
     pr = _run_gh_api(f"repos/{repo}/pulls/{pr_number}")
     node_id = pr.get("node_id") if isinstance(pr, dict) else None
     if not isinstance(node_id, str) or not node_id:
@@ -634,7 +675,7 @@ def unsubscribe_from_pr(repo: str, pr_number: int) -> bool:
     mutation = f"""
     mutation {{
       updateSubscription(
-        input: {{subscribableId: {json.dumps(node_id)}, state: UNSUBSCRIBED}}
+        input: {{subscribableId: {json.dumps(node_id)}, state: {state}}}
       ) {{
         subscribable {{ viewerSubscription }}
       }}
@@ -645,10 +686,36 @@ def unsubscribe_from_pr(repo: str, pr_number: int) -> bool:
         _get_dict(_get_dict(data or {}, "data"), "updateSubscription"),
         "subscribable",
     )
-    if _get_str(subscription, "viewerSubscription") != "UNSUBSCRIBED":
-        logger.warning("Failed to unsubscribe from %s#%d", repo, pr_number)
+    if _get_str(subscription, "viewerSubscription") != state:
+        logger.warning("Failed to set %s#%d to %s", repo, pr_number, state)
         return False
     return True
+
+
+def unsubscribe_from_pr(repo: str, pr_number: int) -> bool:
+    """Unsubscribe the current user from a PR's notifications.
+
+    Args:
+        repo: Repository in 'owner/name' format
+        pr_number: PR number
+
+    Returns:
+        True if successful, False otherwise
+    """
+    return _set_pr_subscription(repo, pr_number, "UNSUBSCRIBED")
+
+
+def subscribe_to_pr(repo: str, pr_number: int) -> bool:
+    """Subscribe the current user to a PR's notifications.
+
+    Args:
+        repo: Repository in 'owner/name' format
+        pr_number: PR number
+
+    Returns:
+        True if successful, False otherwise
+    """
+    return _set_pr_subscription(repo, pr_number, "SUBSCRIBED")
 
 
 def approve_gated_checks(checks: list[GatedCheck]) -> bool:

@@ -141,6 +141,66 @@ class NotificationDedupeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(_notification_ids(app), [])
                 self.assertEqual(app._gh_notifications, [])  # pyright: ignore[reportPrivateUsage]
 
+    async def _remove_then_undo(
+        self, removed: bool, requested: bool = True
+    ) -> tuple[StatusDashboard, MagicMock, MagicMock]:
+        review_request = fake_review_requests()[0]
+        request_self = MagicMock(return_value=requested)
+        subscribe = MagicMock(return_value=True)
+        with (
+            _patched(),
+            patch.object(github, "remove_self_as_reviewer", return_value=removed),
+            patch.object(github, "unsubscribe_from_pr", return_value=True),
+            patch.object(github, "mark_notification_read", return_value=True),
+            patch.object(github, "request_self_as_reviewer", request_self),
+            patch.object(github, "subscribe_to_pr", subscribe),
+        ):
+            app = StatusDashboard()
+            async with app.run_test(size=(120, 40)) as pilot:
+                app._review_requests = [review_request]  # pyright: ignore[reportPrivateUsage]
+                app._render_review_requests_table()  # pyright: ignore[reportPrivateUsage]
+                _ = app.query_one("#review-requests-table").focus()
+                await pilot.pause()
+
+                await pilot.press("x")
+                await pilot.pause()
+                await pilot.press("y")
+                await pilot.press("z")  # before the removal has necessarily finished
+                await app.workers.wait_for_complete()  # pyright: ignore[reportUnknownMemberType]
+                await pilot.pause()
+        return app, request_self, subscribe
+
+    async def test_undo_requests_review_again_and_resubscribes(self) -> None:
+        review_request = fake_review_requests()[0]
+        app, request_self, subscribe = await self._remove_then_undo(removed=True)
+
+        request_self.assert_called_once_with(
+            review_request.repository, review_request.number
+        )
+        subscribe.assert_called_once_with(
+            review_request.repository, review_request.number
+        )
+        self.assertEqual(
+            [r.number for r in app._review_requests],  # pyright: ignore[reportPrivateUsage]
+            [review_request.number],
+        )
+
+    async def test_failed_undo_removes_review_request_again(self) -> None:
+        app, _, subscribe = await self._remove_then_undo(removed=True, requested=False)
+
+        subscribe.assert_not_called()
+        self.assertEqual(app._review_requests, [])  # pyright: ignore[reportPrivateUsage]
+
+    async def test_undo_after_failed_removal_does_nothing(self) -> None:
+        review_request = fake_review_requests()[0]
+        app, request_self, _ = await self._remove_then_undo(removed=False)
+
+        request_self.assert_not_called()
+        self.assertEqual(
+            [r.number for r in app._review_requests],  # pyright: ignore[reportPrivateUsage]
+            [review_request.number],
+        )
+
 
 if __name__ == "__main__":
     _ = unittest.main()

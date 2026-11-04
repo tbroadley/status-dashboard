@@ -588,3 +588,59 @@ class RemoveSelfAsReviewerTests(unittest.TestCase):
     def test_fails_on_api_error(self) -> None:
         result, _ = self._run("", returncode=1)
         self.assertFalse(result)
+
+
+class SubscribeToPRTests(unittest.TestCase):
+    def test_subscribes_using_pr_node_id(self) -> None:
+        response = {
+            "data": {
+                "updateSubscription": {
+                    "subscribable": {"viewerSubscription": "SUBSCRIBED"}
+                }
+            }
+        }
+        with (
+            patch.object(github, "_run_gh_api", return_value={"node_id": "PR_abc"}),
+            patch.object(github, "_run_gh_graphql", return_value=response) as run_gql,
+        ):
+            self.assertTrue(github.subscribe_to_pr("acme/repo", 7))
+
+        query = cast(str, run_gql.call_args.args[0])
+        self.assertIn("state: SUBSCRIBED", query)
+
+
+class RequestSelfAsReviewerTests(unittest.TestCase):
+    def _run(self, stdout: str, returncode: int = 0) -> tuple[bool, list[str]]:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=returncode, stdout=stdout, stderr=""
+        )
+        with (
+            patch.object(github, "get_my_username", return_value="Me"),
+            patch.object(subprocess, "run", return_value=completed) as run,
+        ):
+            result = github.request_self_as_reviewer("acme/repo", 7)
+        return result, cast(list[str], run.call_args.args[0])
+
+    def test_requests_review_from_own_login(self) -> None:
+        result, cmd = self._run(json.dumps({"requested_reviewers": [{"login": "me"}]}))
+        self.assertTrue(result)
+        self.assertEqual(
+            cmd,
+            [
+                "gh",
+                "api",
+                "-X",
+                "POST",
+                "repos/acme/repo/pulls/7/requested_reviewers",
+                "-f",
+                "reviewers[]=Me",
+            ],
+        )
+
+    def test_fails_if_not_requested_afterwards(self) -> None:
+        result, _ = self._run(json.dumps({"requested_reviewers": [{"login": "other"}]}))
+        self.assertFalse(result)
+
+    def test_fails_on_api_error(self) -> None:
+        result, _ = self._run("", returncode=1)
+        self.assertFalse(result)

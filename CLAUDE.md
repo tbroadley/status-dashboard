@@ -112,7 +112,7 @@ S3 10s connect + 20s read with no automatic retries, Linear 10s.
 
 **GitHub** (`clients/github.py`):
 - Uses `gh api graphql` subprocess for queries
-- Functions: `get_my_prs()`, `get_review_requests()`, `squash_merge_pr()`, `approve_gated_checks()`, `remove_self_as_reviewer()`, `unsubscribe_from_pr()`
+- Functions: `get_my_prs()`, `get_review_requests()`, `squash_merge_pr()`, `approve_gated_checks()`, `remove_self_as_reviewer()`, `request_self_as_reviewer()`, `unsubscribe_from_pr()`, `subscribe_to_pr()`
 - Gated checks: check runs in `WAITING` on an environment approval the viewer can give.
   `get_my_prs()` fetches check contexts only for pending PRs, in a second batched query
   (fetching them in the main search times out). A pending PR whose only unfinished checks

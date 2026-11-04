@@ -141,7 +141,7 @@ approves those environments so the checks run.
 ### Review Requests
 | Key | Action |
 |-----|--------|
-| `x` | Remove yourself as reviewer (also marks the PR's notifications read) |
+| `x` | Remove yourself as reviewer (also marks the PR's notifications read; `z` re-requests you and resubscribes) |
 
 ### Notifications
 

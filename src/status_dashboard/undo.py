@@ -1,5 +1,8 @@
+import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from status_dashboard.clients.github import ReviewRequest
 
 
 @dataclass
@@ -40,6 +43,23 @@ class LinearMoveAction(UndoAction):
     issue_id: str = ""
     previous_sort_order: float = 0.0
     action_type: str = "linear_move"
+
+
+@dataclass
+class RemoveReviewerAction(UndoAction):
+    """Undo removing yourself as a reviewer by requesting yourself again.
+
+    `done` is set once the removal has finished on GitHub, and `removed` says
+    whether it succeeded, so an undo issued right away waits for it first.
+    """
+
+    repo: str = ""
+    pr_number: int = 0
+    review: ReviewRequest | None = None
+    index: int = -1
+    done: asyncio.Event = field(default_factory=asyncio.Event)
+    removed: bool = False
+    action_type: str = "remove_reviewer"
 
 
 class UndoStack:

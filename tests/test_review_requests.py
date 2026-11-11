@@ -99,6 +99,53 @@ class ReviewRequestsTableTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(cast(Text, row[2]).plain, "No review requests")
                 self.assertEqual(row[6:], ["", ""])
 
+    async def test_open_all_opens_each_visible_request_in_a_tab(self) -> None:
+        requests = fake_review_requests()
+        hidden = requests[0]
+        with (
+            _patched(),
+            patch.object(
+                app_module,
+                "HIDDEN_REVIEW_REQUESTS",
+                {(hidden.repository, hidden.number)},
+            ),
+            patch("webbrowser.open_new_tab") as open_new_tab,
+        ):
+            app = StatusDashboard()
+            async with app.run_test(size=(120, 40)) as pilot:
+                app._review_requests = requests  # pyright: ignore[reportPrivateUsage]
+                app._render_review_requests_table()  # pyright: ignore[reportPrivateUsage]
+                _ = app.query_one(
+                    "#review-requests-table", ReviewRequestsDataTable
+                ).focus()
+                await pilot.pause()
+
+                await pilot.press("O")
+                await pilot.pause()
+
+        self.assertEqual(
+            [call.args[0] for call in open_new_tab.call_args_list],
+            [pr.url for pr in requests[1:]],
+        )
+
+    async def test_open_all_with_no_requests_opens_nothing(self) -> None:
+        with (
+            _patched(),
+            patch("webbrowser.open_new_tab") as open_new_tab,
+        ):
+            app = StatusDashboard()
+            async with app.run_test(size=(120, 40)) as pilot:
+                app._render_review_requests_table()  # pyright: ignore[reportPrivateUsage]
+                _ = app.query_one(
+                    "#review-requests-table", ReviewRequestsDataTable
+                ).focus()
+                await pilot.pause()
+
+                await pilot.press("O")
+                await pilot.pause()
+
+        open_new_tab.assert_not_called()
+
 
 if __name__ == "__main__":
     _ = unittest.main()

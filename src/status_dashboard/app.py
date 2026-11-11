@@ -438,6 +438,7 @@ class ReviewRequestsDataTable(VimDataTable):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("x", "app.remove_self_as_reviewer", "Remove & Unsub"),
         Binding("c", "app.copy_pr_link", "Copy Link"),
+        Binding("O", "app.open_all_review_requests", "Open All"),
     ]
 
 
@@ -2137,6 +2138,18 @@ class StatusDashboard(App[None]):
                     break
             self._render_linear_table()
             self.notify("Failed to update assignment", severity="error")
+
+    def action_open_all_review_requests(self) -> None:
+        """Open every visible review request in its own browser tab."""
+        urls = [pr.url for pr in self._visible_review_requests() if pr.url]
+        if not urls:
+            self.notify("No review requests to open", severity="warning")
+            return
+
+        for url in urls:
+            _ = webbrowser.open_new_tab(url)
+        noun = "review request" if len(urls) == 1 else "review requests"
+        self.notify(f"Opened {len(urls)} {noun}")
 
     def action_remove_self_as_reviewer(self) -> None:
         """Remove yourself as a reviewer from the selected PR and unsubscribe."""

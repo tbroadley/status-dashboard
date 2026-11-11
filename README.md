@@ -142,6 +142,7 @@ approves those environments so the checks run.
 | Key | Action |
 |-----|--------|
 | `x` | Remove yourself as reviewer (also marks the PR's notifications read; `z` re-requests you and resubscribes) |
+| `O` | Open every listed review request in its own browser tab |
 
 ### Notifications
 

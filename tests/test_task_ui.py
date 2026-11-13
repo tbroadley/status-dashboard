@@ -426,6 +426,14 @@ class TestOptimisticTaskUpdates(TaskUITest):
             browser.assert_called_once_with("https://example.com/x")
             self.assertEqual(len(self.s3.calls), before)
 
+    async def test_open_file_link(self):
+        for content in ("notes file:///tmp/notes.md", "[notes](file:///tmp/notes.md)"):
+            with self.subTest(content=content):
+                async with self.running([task_row("a", content)]) as pilot:
+                    with patch("webbrowser.open") as browser:
+                        await pilot.press("o")
+                    browser.assert_called_once_with("file:///tmp/notes.md")
+
     async def test_edit_shows_immediately(self):
         async with self.running(today_rows("A", "B")):
             gate = self.s3.gate("put")

@@ -1854,10 +1854,10 @@ class StatusDashboard(App[None]):
 
     def _extract_url(self, text: str) -> str | None:
         """Extract a URL from text, handling Markdown links like [text](url)."""
-        markdown_link = re.search(r"\[.*?\]\((https?://[^)]+)\)", text)
+        markdown_link = re.search(r"\[.*?\]\(((?:https?|file)://[^)]+)\)", text)
         if markdown_link:
             return markdown_link.group(1)
-        url_pattern = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+')
+        url_pattern = re.compile(r'(?:https?|file)://[^\s<>"{}|\\^`\[\]]+')
         match = url_pattern.search(text)
         if match:
             return match.group()

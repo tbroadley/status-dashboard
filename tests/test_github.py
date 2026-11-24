@@ -199,13 +199,10 @@ class GetReviewRequestsTests(unittest.TestCase):
                         "nodes": [{**r, "state": "COMMENTED"} for r in reviews]
                     },
                 }
-                with (
-                    patch.object(github, "get_my_username", return_value="reviewer"),
-                    patch.object(
-                        github,
-                        "_run_gh_graphql",
-                        return_value={"data": {"search": {"nodes": [node]}}},
-                    ),
+                with patch.object(
+                    github,
+                    "_run_gh_graphql",
+                    return_value={"data": {"search": {"nodes": [node]}}},
                 ):
                     prs = github.get_review_requests(["acme"])
                 self.assertEqual(prs[0].has_other_review, reviewed)
@@ -228,18 +225,18 @@ class GetReviewRequestsTests(unittest.TestCase):
             "reviewRequests": {"nodes": [{"requestedReviewer": {"login": "reviewer"}}]},
             **counts,
         }
-        with (
-            patch.object(github, "get_my_username", return_value="reviewer"),
-            patch.object(
-                github,
-                "_run_gh_graphql",
-                return_value={"data": {"search": {"nodes": [node]}}},
-            ) as run_query,
-        ):
+        with patch.object(
+            github,
+            "_run_gh_graphql",
+            return_value={"data": {"search": {"nodes": [node]}}},
+        ) as run_query:
             prs = github.get_review_requests(["acme"])
 
         run_query.assert_called_once()
         query = cast(str, run_query.call_args.args[0])
+        self.assertIn(
+            'query: "user-review-requested:@me state:open type:pr org:acme"', query
+        )
         self.assertIn("\n        additions\n", query)
         self.assertIn("\n        deletions\n", query)
         self.assertEqual(len(prs), 1)

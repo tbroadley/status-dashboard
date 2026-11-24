@@ -816,12 +816,13 @@ def get_review_requests(orgs: list[str] | None = None) -> list[ReviewRequest]:
     """
     owners = orgs or _get_orgs()
     all_prs: list[ReviewRequest] = []
-    my_username = get_my_username()
 
     # GitHub search OR's repeated org: qualifiers, so all orgs fit in one query.
+    # user-review-requested leaves out team-only requests, which would otherwise
+    # fill the first page of results and push direct requests off it.
     scope = " ".join(f"org:{owner}" for owner in owners)
     query = REVIEW_REQUESTS_QUERY.format(
-        search_query=f"review-requested:@me state:open type:pr {scope}"
+        search_query=f"user-review-requested:@me state:open type:pr {scope}"
     )
     result = _run_gh_graphql(query)
     if not result:
@@ -835,22 +836,13 @@ def get_review_requests(orgs: list[str] | None = None) -> list[ReviewRequest]:
         if not pr:
             continue
 
-        # Extract requested teams and directly-requested users
         requested_teams: list[str] = []
-        directly_requested_users: list[str] = []
         rr_wrapper = _get_dict(pr, "reviewRequests")
         review_requests = _get_list(rr_wrapper, "nodes")
         for req in review_requests:
             reviewer = _get_dict(req, "requestedReviewer")
             if reviewer and "slug" in reviewer:
                 requested_teams.append(_get_str(reviewer, "slug"))
-            login = _get_str(reviewer, "login")
-            if login:
-                directly_requested_users.append(login)
-
-        # Skip PRs where review is only requested via team, not directly
-        if my_username and my_username not in directly_requested_users:
-            continue
 
         # Check if someone else has already submitted a review
         lr_wrapper = _get_dict(pr, "latestReviews")

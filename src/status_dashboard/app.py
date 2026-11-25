@@ -826,15 +826,20 @@ class StatusDashboard(App[None]):
 
         Returns whether it succeeded. After a failed or ignored sign-in, no
         new one starts for a while, so the browser isn't opened repeatedly.
+        None starts while nobody is at the machine to approve it.
         """
         if self._aws_login is None:
             if not aws_login.enabled():
                 return False
+            # Wall-clock time: the monotonic clock stops while the machine
+            # sleeps, which would stretch the wait across a night.
             failed_at = self._aws_login_failed_at
             if (
                 failed_at is not None
-                and time.monotonic() - failed_at < aws_login.RETRY_AFTER_SECONDS
+                and 0 <= time.time() - failed_at < aws_login.RETRY_AFTER_SECONDS
             ):
+                return False
+            if not await asyncio.to_thread(aws_login.user_present):
                 return False
             self._aws_login = asyncio.create_task(self._run_aws_login())
         return await asyncio.shield(self._aws_login)
@@ -852,7 +857,7 @@ class StatusDashboard(App[None]):
                 "AWS sign-in expired. Running aws sso login; approve it in your browser.",
             )
             signed_in = await aws_login.sso_login()
-            self._aws_login_failed_at = None if signed_in else time.monotonic()
+            self._aws_login_failed_at = None if signed_in else time.time()
             return signed_in
         finally:
             self._aws_login = None

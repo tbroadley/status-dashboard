@@ -126,7 +126,8 @@ S3 10s connect + 20s read with no automatic retries, Linear 10s.
   (`SignInRequired`) drops the client so the next request picks up fresh credentials.
 - On `SignInRequired`, `_task_request` runs `aws sso login` (`aws_login.py`) with a
   silent desktop notification, then repeats the request once. Concurrent requests
-  share one login; after a failed or ignored login none starts for 15 minutes.
+  share one login; after a failed or ignored login none starts for 15 minutes of
+  wall-clock time, and none starts while the display is asleep (`user_present`).
 - Shared format: `{"version":1,"rows":[...]}` with nine string cells per row:
   `id, content, project, description, due, recurrence, order, done, completed_at`.
 - `order` is one ranking across all rows, not a position within a day. Reordering a

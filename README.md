@@ -26,7 +26,8 @@ A terminal dashboard for tracking PRs, tasks stored in S3, and Linear issues.
 
 3. Make AWS credentials available through the standard chain (for SSO: `aws sso login`), then install and run.
    When an SSO session expires, the dashboard runs `aws sso login` itself and posts a
-   silent desktop notification; approve the sign-in in the browser and the request is retried:
+   silent desktop notification; approve the sign-in in the browser and the request is retried.
+   It waits to do so until the display is awake, so nothing opens while you are away:
    ```bash
    uv sync
    uv run status-dashboard

@@ -2,9 +2,11 @@
 
 import asyncio
 import contextlib
+import ctypes
 import logging
 import os
 import shutil
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +21,27 @@ def enabled() -> bool:
     """Whether to run `aws sso login` automatically (`AWS_AUTO_SSO_LOGIN`, default on)."""
     raw = os.environ.get("AWS_AUTO_SSO_LOGIN", "true")
     return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def user_present() -> bool:
+    """Whether someone is likely at the machine to approve a sign-in.
+
+    On macOS the display is asleep while the machine is idle or briefly awake
+    with the lid closed. A login started then opens a browser tab nobody sees
+    and fails, so callers wait for the display to come back.
+    """
+    if sys.platform != "darwin":
+        return True
+    try:
+        graphics = ctypes.CDLL(
+            "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
+        )
+        graphics.CGMainDisplayID.restype = ctypes.c_uint32
+        graphics.CGDisplayIsAsleep.argtypes = [ctypes.c_uint32]
+        graphics.CGDisplayIsAsleep.restype = ctypes.c_uint32
+        return not graphics.CGDisplayIsAsleep(graphics.CGMainDisplayID())
+    except (OSError, AttributeError):
+        return True
 
 
 async def sso_login() -> bool:

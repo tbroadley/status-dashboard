@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import os
 import threading
+import time
 import unittest
 from collections.abc import Iterator
 from datetime import date, timedelta
@@ -10,7 +11,7 @@ from unittest.mock import patch
 
 from textual.widgets import Static
 
-from status_dashboard import task_store
+from status_dashboard import aws_login, task_store
 from status_dashboard.app import StatusDashboard, TodoistDataTable
 from status_dashboard.task_store import decode_document, encode_document
 from tests.test_task_store import FakeS3, client_error
@@ -594,7 +595,9 @@ class TestAwsSignIn(TaskUITest):
     """Expired AWS credentials trigger one `aws sso login`, then a retry."""
 
     @contextlib.contextmanager
-    def sso_login(self, succeeds: bool) -> Iterator[list[int]]:
+    def sso_login(
+        self, succeeds: bool, user_present: bool = True
+    ) -> Iterator[list[int]]:
         calls: list[int] = []
 
         async def fake_login() -> bool:
@@ -606,6 +609,10 @@ class TestAwsSignIn(TaskUITest):
 
         with (
             patch("status_dashboard.app.aws_login.sso_login", fake_login),
+            patch(
+                "status_dashboard.app.aws_login.user_present",
+                return_value=user_present,
+            ),
             patch(
                 "status_dashboard.app.notifications.send_desktop_notification"
             ) as desktop,
@@ -649,6 +656,36 @@ class TestAwsSignIn(TaskUITest):
             self.assertIn("Task storage unavailable", titles)
             self.assertEqual(titles.count("AWS sign-in expired"), 1)
             self.s3.fail = None
+
+    async def test_failed_sign_in_is_retried_after_the_machine_slept(self):
+        async with self.running(today_rows("A")):
+            self.s3.fail = client_error("ExpiredToken")
+            with self.sso_login(succeeds=False) as logins:
+                await self.refresh()
+                self.assertEqual(logins, [1])
+            # Sleep advances the wall clock but not the monotonic one.
+            later = time.time() + aws_login.RETRY_AFTER_SECONDS + 1
+            with (
+                patch("status_dashboard.app.time.time", return_value=later),
+                self.sso_login(succeeds=True) as logins,
+            ):
+                await self.refresh()
+            self.assertEqual(logins, [1])
+
+    async def test_no_sign_in_starts_while_nobody_is_at_the_machine(self):
+        async with self.running(today_rows("A")):
+            self.s3.fail = client_error("ExpiredToken")
+            with (
+                self.sso_login(succeeds=True, user_present=False) as logins,
+                patch.object(self.app, "notify") as notify,
+            ):
+                await self.refresh()
+            self.assertEqual(logins, [])
+            titles = [c.kwargs.get("title") for c in notify.call_args_list]
+            self.assertEqual(titles, ["Task storage unavailable"])
+            with self.sso_login(succeeds=True) as logins:
+                await self.refresh()
+            self.assertEqual(logins, [1], "the skipped attempt starts no wait")
 
     async def test_disabled_auto_sign_in_only_reports_the_error(self):
         async with self.running(today_rows("A")):
